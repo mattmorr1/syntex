@@ -1,4 +1,4 @@
-# DocuCraft LaTeX Renderer
+# uea LaTeX Renderer
 
 A server-client based LaTeX renderer that transforms DOCX files into LaTeX documents using AI and provides an integrated development environment for editing and compiling LaTeX code.
 
@@ -90,7 +90,7 @@ PORT=8000
 DEBUG=False
 
 # Security Configuration
-SECRET_KEY=your-secret-key-change-this-in-production
+
 ACCESS_TOKEN_EXPIRE_MINUTES=30
 
 # File Upload Configuration
@@ -158,8 +158,8 @@ docker compose --profile production up --build
 
 #### Individual Docker commands:
 ```bash
-docker build -t docucraft .
-docker run -p 8000:8000 docucraft
+docker build -t uea .
+docker run -p 8000:8000 uea
 ```
 
 ## API Endpoints
@@ -200,7 +200,7 @@ docker run -p 8000:8000 docucraft
 
 For development and testing purposes, a test account is available:
 
-- **Email**: `test@docucraft.com`
+- **Email**: `test@uea.com`
 - **Password**: `testpass123`
 
 To populate the history page with sample data, run:

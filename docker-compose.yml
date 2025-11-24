@@ -1,5 +1,5 @@
 services:
-  docucraft:
+  uea:
     build: .
     ports:
       - "8000:8000"
@@ -14,7 +14,7 @@ services:
       - GEMINI_MODEL=gemini-pro
       - LATEX_COMPILER=pdflatex
       - LATEX_TIMEOUT=30
-      - SECRET_KEY=dev-secret-key-change-in-production
+
       - ACCESS_TOKEN_EXPIRE_MINUTES=30
       - MAX_FILE_SIZE=10485760
     restart: unless-stopped
@@ -35,11 +35,11 @@ services:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
       - ./ssl:/etc/nginx/ssl:ro
     depends_on:
-      - docucraft
+      - uea
     restart: unless-stopped
     profiles:
       - production
 
 networks:
   default:
-    name: docucraft-network
+    name: uea-network

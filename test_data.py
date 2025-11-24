@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test Data Generator for DocuCraft
+Test Data Generator for uea
 This script creates sample projects in Firebase for testing the history page.
 """
 
@@ -141,7 +141,7 @@ def create_test_projects(user_id="test_user_123", num_projects=10):
 def create_test_user():
     """Create a test user document"""
     user_data = {
-        "email": "test@docucraft.com",
+        "email": "test@uea.com",
         "created_at": datetime.now(),
         "last_login": datetime.now(),
         "projects_count": 0
@@ -151,7 +151,7 @@ def create_test_user():
     print("Created test user: test_user_123")
 
 def main():
-    print("DocuCraft Test Data Generator")
+    print("uea Test Data Generator")
     print("=" * 40)
     
     try:
@@ -163,7 +163,7 @@ def main():
         
         print("\nTest data generation completed!")
         print("\nTest Account Details:")
-        print("Email: test@docucraft.com")
+        print("Email: test@uea.com")
         print("Password: testpass123")
         print("\nYou can now login and view the history page with sample projects.")
         

@@ -29,7 +29,7 @@ document.addEventListener('DOMContentLoaded', function() {
 \\geometry{a4paper, margin=1in}
 
 \\title{Analysis of AI Impact on Modern Workflows}
-\\author{DocuCraft AI}
+\\author{uea AI}
 \\date{\\today}
 
 \\begin{document}
@@ -59,7 +59,7 @@ AI represents a paradigm shift in how we approach complex problems.
 \\end{document}`,
         'references.bib': `@article{ai2023,
   title={Artificial Intelligence in Modern Workflows},
-  author={DocuCraft AI},
+  author={uea AI},
   journal={Journal of AI Applications},
   year={2023},
   volume={1},
@@ -277,7 +277,7 @@ AI represents a paradigm shift in how we approach complex problems.
         outputContent.innerHTML = `
             <div class="rendered-document">
                 <h1>Analysis of AI Impact on Modern Workflows</h1>
-                <p><strong>DocuCraft AI</strong></p>
+                <p><strong>uea AI</strong></p>
                 <p>November 26, 2023</p>
                 <h2>1 Introduction</h2>
                 <p>Artificial Intelligence (AI) is transforming industries by automating tasks, enabling data-driven decisions, and creating new opportunities for innovation. Lorem ipsum dolor sit amet, consectetur adipiscing elit.</p>

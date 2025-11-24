@@ -11,6 +11,7 @@ firebase-key-*.json
 *.json
 !package.json
 !package-lock.json
+!vercel.json
 
 # Python
 __pycache__/
