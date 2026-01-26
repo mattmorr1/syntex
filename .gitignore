@@ -12,6 +12,13 @@ firebase-key-*.json
 !package.json
 !package-lock.json
 !vercel.json
+!tsconfig.json
+!tsconfig.node.json
+
+# Node modules
+node_modules/
+frontend/node_modules/
+frontend/dist/
 
 # Python
 __pycache__/

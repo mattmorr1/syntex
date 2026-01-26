@@ -1,33 +1,40 @@
 services:
-  uea-dev:
-    build: .
+  uea:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
     ports:
       - "8000:8000"
     environment:
       - HOST=0.0.0.0
       - PORT=8000
       - DEBUG=True
-      - PYTHONPATH=/app
       - FIREBASE_KEY_PATH=firebase-key.json
-      - GCP_PROJECT_ID=your-gcp-project-id
-      - GCP_BUCKET_NAME=your-bucket-name
-      - GCP_REGION=us-central1
-      - GEMINI_MODEL=gemini-pro
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_FLASH_MODEL=gemini-2.0-flash
+      - GEMINI_PRO_MODEL=gemini-1.5-pro
       - LATEX_COMPILER=pdflatex
-      - LATEX_TIMEOUT=30
-
-      - ACCESS_TOKEN_EXPIRE_MINUTES=30
-      - MAX_FILE_SIZE=10485760
+      - LATEX_TIMEOUT=60
+      - ADMIN_EMAIL=mmorristwo@gmail.com
+      - ADMIN_USERNAME=matt
+      - ADMIN_PASSWORD=password
     volumes:
       - .:/app
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+      - /app/frontend/node_modules
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
+
+  frontend:
+    image: node:20-alpine
+    working_dir: /app
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    command: sh -c "npm install && npm run dev -- --host"
+    restart: unless-stopped
 
 networks:
   default:

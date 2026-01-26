@@ -4,19 +4,34 @@ services:
     ports:
       - "8000:8000"
     environment:
+      # Server
       - HOST=0.0.0.0
       - PORT=8000
       - DEBUG=False
+      
+      # Firebase
       - FIREBASE_KEY_PATH=firebase-key.json
-      - GCP_PROJECT_ID=your-gcp-project-id
-      - GCP_BUCKET_NAME=your-bucket-name
-      - GCP_REGION=us-central1
-      - GEMINI_MODEL=gemini-pro
+      
+      # Gemini AI
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_FLASH_MODEL=gemini-2.0-flash
+      - GEMINI_PRO_MODEL=gemini-1.5-pro
+      
+      # LaTeX
       - LATEX_COMPILER=pdflatex
-      - LATEX_TIMEOUT=30
-
-      - ACCESS_TOKEN_EXPIRE_MINUTES=30
+      - LATEX_TIMEOUT=60
+      
+      # Admin
+      - ADMIN_EMAIL=mmorristwo@gmail.com
+      - ADMIN_USERNAME=matt
+      - ADMIN_PASSWORD=password
+      
+      # Security
+      - ACCESS_TOKEN_EXPIRE_MINUTES=60
       - MAX_FILE_SIZE=10485760
+    volumes:
+      - ./firebase-key.json:/app/firebase-key.json:ro
+      - uea-tmp:/app/tmp
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -25,7 +40,7 @@ services:
       retries: 3
       start_period: 40s
 
-  # Optional: Add a reverse proxy for production
+  # Reverse proxy for production
   nginx:
     image: nginx:alpine
     ports:
@@ -39,6 +54,9 @@ services:
     restart: unless-stopped
     profiles:
       - production
+
+volumes:
+  uea-tmp:
 
 networks:
   default:

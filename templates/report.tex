@@ -1,0 +1,214 @@
+\documentclass[11pt]{article}
+
+% Packages
+\usepackage[utf8]{inputenc}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage[margin=1in]{geometry}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{float}
+\usepackage{xcolor}
+\usepackage{tcolorbox}
+
+% Colors
+\definecolor{headerblue}{RGB}{41, 65, 114}
+\definecolor{accentblue}{RGB}{66, 133, 244}
+
+% Header/Footer
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\textcolor{headerblue}{\textbf{Technical Report}}}
+\fancyhead[R]{\textcolor{headerblue}{\thepage}}
+\renewcommand{\headrulewidth}{2pt}
+\renewcommand{\headrule}{\hbox to\headwidth{\color{headerblue}\leaders\hrule height \headrulewidth\hfill}}
+
+% Section formatting
+\titleformat{\section}
+{\normalfont\Large\bfseries\color{headerblue}}{\thesection}{1em}{}
+
+\titleformat{\subsection}
+{\normalfont\large\bfseries\color{headerblue!80}}{\thesubsection}{1em}{}
+
+% Custom boxes
+\newtcolorbox{keypoint}{
+    colback=accentblue!5,
+    colframe=accentblue,
+    title=Key Point,
+    fonttitle=\bfseries
+}
+
+\newtcolorbox{recommendation}{
+    colback=green!5,
+    colframe=green!50!black,
+    title=Recommendation,
+    fonttitle=\bfseries
+}
+
+% Title
+\title{
+\vspace{-1in}
+\textcolor{headerblue}{\rule{\linewidth}{2pt}}\\[0.5em]
+\textbf{\LARGE Technical Report}\\[0.3em]
+\large Project Title Here\\[0.3em]
+\textcolor{headerblue}{\rule{\linewidth}{2pt}}
+}
+
+\author{
+\textbf{Author Name}\\
+Organization / Company\\
+\texttt{email@example.com}
+}
+
+\date{\today}
+
+\begin{document}
+
+\maketitle
+\thispagestyle{fancy}
+
+% Executive Summary
+\begin{abstract}
+\noindent\textbf{Executive Summary:} This report presents a comprehensive analysis of... The executive summary should provide a high-level overview of the report's key findings and recommendations in 2-3 paragraphs.
+
+\noindent\textbf{Key Findings:}
+\begin{itemize}[noitemsep]
+    \item Finding 1
+    \item Finding 2
+    \item Finding 3
+\end{itemize}
+\end{abstract}
+
+\vspace{1em}
+
+\tableofcontents
+\newpage
+
+\section{Introduction}
+
+\subsection{Background}
+
+Provide context for the report. What is the problem or opportunity being addressed?
+
+\subsection{Objectives}
+
+The objectives of this report are:
+\begin{enumerate}
+    \item First objective
+    \item Second objective
+    \item Third objective
+\end{enumerate}
+
+\subsection{Scope}
+
+This report covers... It does not address...
+
+\section{Methodology}
+
+\subsection{Data Collection}
+
+Describe how data was collected and from what sources.
+
+\subsection{Analysis Approach}
+
+Explain the analytical methods used.
+
+\begin{keypoint}
+Important methodological consideration that readers should be aware of.
+\end{keypoint}
+
+\section{Findings}
+
+\subsection{Finding 1: Title}
+
+Description of the first major finding...
+
+\begin{table}[H]
+\centering
+\caption{Summary of Key Metrics}
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+\textbf{Category} & \textbf{Current} & \textbf{Target} & \textbf{Gap} \\
+\midrule
+Metric A & 75\% & 90\% & 15\% \\
+Metric B & 82\% & 85\% & 3\% \\
+Metric C & 60\% & 80\% & 20\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Finding 2: Title}
+
+Description of the second major finding...
+
+\begin{figure}[H]
+\centering
+% \includegraphics[width=0.8\textwidth]{figure.png}
+\fbox{\parbox{0.8\textwidth}{\centering\vspace{2cm}[Figure Placeholder]\vspace{2cm}}}
+\caption{Description of the figure}
+\label{fig:example}
+\end{figure}
+
+\subsection{Finding 3: Title}
+
+Description of the third major finding...
+
+\section{Analysis}
+
+\subsection{Interpretation of Results}
+
+What do the findings mean? How should they be interpreted?
+
+\subsection{Implications}
+
+What are the broader implications of these findings?
+
+\begin{keypoint}
+Critical insight that emerged from the analysis.
+\end{keypoint}
+
+\section{Recommendations}
+
+Based on our analysis, we recommend the following actions:
+
+\begin{recommendation}
+\textbf{Recommendation 1:} Description of the first recommendation and the rationale behind it.
+\end{recommendation}
+
+\begin{recommendation}
+\textbf{Recommendation 2:} Description of the second recommendation and the rationale behind it.
+\end{recommendation}
+
+\begin{recommendation}
+\textbf{Recommendation 3:} Description of the third recommendation and the rationale behind it.
+\end{recommendation}
+
+\subsection{Implementation Roadmap}
+
+\begin{enumerate}
+    \item \textbf{Phase 1:} Short-term actions
+    \item \textbf{Phase 2:} Medium-term actions
+    \item \textbf{Phase 3:} Long-term actions
+\end{enumerate}
+
+\section{Conclusion}
+
+Summarize the key points of the report and restate the most important recommendations.
+
+\section*{Appendix A: Supporting Data}
+\addcontentsline{toc}{section}{Appendix A: Supporting Data}
+
+Additional data and detailed calculations can be included here.
+
+\section*{References}
+\addcontentsline{toc}{section}{References}
+
+\begin{enumerate}
+    \item Reference 1
+    \item Reference 2
+    \item Reference 3
+\end{enumerate}
+
+\end{document}

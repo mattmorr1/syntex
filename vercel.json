@@ -1,14 +1,36 @@
 {
+  "version": 2,
   "builds": [
     {
-      "src": "main.py",
+      "src": "api/main.py",
       "use": "@vercel/python"
+    },
+    {
+      "src": "frontend/package.json",
+      "use": "@vercel/static-build",
+      "config": {
+        "distDir": "dist"
+      }
     }
   ],
   "routes": [
     {
+      "src": "/api/(.*)",
+      "dest": "api/main.py"
+    },
+    {
+      "src": "/assets/(.*)",
+      "dest": "frontend/dist/assets/$1"
+    },
+    {
       "src": "/(.*)",
-      "dest": "main.py"
+      "dest": "frontend/dist/index.html"
     }
-  ]
+  ],
+  "env": {
+    "GEMINI_API_KEY": "@gemini-api-key",
+    "FIREBASE_KEY_PATH": "firebase-key.json",
+    "ADMIN_EMAIL": "mmorristwo@gmail.com",
+    "ADMIN_USERNAME": "matt"
+  }
 }

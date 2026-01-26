@@ -1,0 +1,78 @@
+\documentclass[11pt]{letter}
+
+% Packages
+\usepackage[utf8]{inputenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{fancyhdr}
+
+% Colors
+\definecolor{headercolor}{RGB}{44, 62, 80}
+
+% Remove default header/footer
+\pagestyle{empty}
+
+% Sender information
+\signature{Your Name\\
+\small Title/Position}
+
+\address{
+\textcolor{headercolor}{\textbf{Your Name}}\\
+Your Address Line 1\\
+City, State ZIP Code\\
+Phone: (555) 123-4567\\
+Email: your.email@example.com
+}
+
+\begin{document}
+
+% Custom letterhead
+\begin{center}
+\textcolor{headercolor}{\rule{\textwidth}{2pt}}\\[0.5em]
+{\Large\textcolor{headercolor}{\textbf{YOUR ORGANIZATION}}}\\[0.3em]
+\small 123 Business Street, Suite 100 $\bullet$ City, State 12345\\
+Phone: (555) 000-0000 $\bullet$ www.organization.com\\
+\textcolor{headercolor}{\rule{\textwidth}{0.5pt}}
+\end{center}
+
+\vspace{1em}
+
+\begin{letter}{
+Recipient Name\\
+Title\\
+Organization Name\\
+Street Address\\
+City, State ZIP Code
+}
+
+\opening{Dear Mr./Ms. Last Name,}
+
+% First paragraph: State the purpose of your letter
+I am writing to [state the purpose of your letter]. This opening paragraph should clearly establish why you are writing and capture the reader's attention.
+
+% Middle paragraphs: Provide details and supporting information
+In the following paragraphs, provide relevant details that support your purpose. Be clear, concise, and professional. Include specific information, dates, or facts as needed.
+
+If you are making a request, clearly state what you need and by when. If you are providing information, organize it logically and make it easy to understand. If you are addressing a concern, present the facts objectively and suggest solutions.
+
+% Additional paragraph if needed
+You may include additional paragraphs as necessary to fully address your topic. However, business letters should generally be kept to one page when possible.
+
+% Closing paragraph: Call to action or next steps
+Thank you for your time and consideration. I look forward to [expected outcome or next step]. Please feel free to contact me at [phone number] or [email address] if you have any questions or need additional information.
+
+\closing{Sincerely,}
+
+% Enclosures (if any)
+\encl{Enclosure 1\\Enclosure 2}
+
+% Carbon copy (if any)
+\cc{Name 1\\Name 2}
+
+% Postscript (if needed)
+\ps{P.S. Any additional note can be added here.}
+
+\end{letter}
+
+\end{document}

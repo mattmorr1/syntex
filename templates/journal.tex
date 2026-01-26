@@ -1,0 +1,146 @@
+\documentclass[10pt,twocolumn]{article}
+
+% Packages
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage[margin=0.75in]{geometry}
+\usepackage{abstract}
+\usepackage{fancyhdr}
+\usepackage{natbib}
+\usepackage{times}
+
+% Header/Footer
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\footnotesize \textit{Journal Article}}
+\fancyhead[R]{\footnotesize \thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% Abstract styling
+\renewcommand{\abstractnamefont}{\normalfont\bfseries}
+\renewcommand{\abstracttextfont}{\normalfont\small}
+
+% Theorem environments
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{corollary}[theorem]{Corollary}
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}
+\newtheorem{example}{Example}
+
+\title{\textbf{Your Paper Title Here}\\[0.5em]
+\large A Comprehensive Study}
+
+\author{
+Author One$^{1}$ \and Author Two$^{2}$\\[0.5em]
+\small $^{1}$Institution One, City, Country\\
+\small $^{2}$Institution Two, City, Country\\[0.3em]
+\small \texttt{author1@example.com, author2@example.com}
+}
+
+\date{\today}
+
+\begin{document}
+
+\twocolumn[
+  \begin{@twocolumnfalse}
+    \maketitle
+    \begin{abstract}
+    This paper presents a comprehensive analysis of... The abstract should be a single paragraph of approximately 150-250 words that summarizes the key points of your research, including the problem statement, methodology, main findings, and conclusions.
+    
+    \noindent\textbf{Keywords:} keyword1, keyword2, keyword3, keyword4
+    \end{abstract}
+    \vspace{1em}
+  \end{@twocolumnfalse}
+]
+
+\section{Introduction}
+
+The introduction should provide context for your research and clearly state the problem you are addressing. Include a brief literature review and state your research objectives.
+
+\subsection{Background}
+
+Provide relevant background information here.
+
+\subsection{Contributions}
+
+The main contributions of this paper are:
+\begin{enumerate}
+    \item First contribution
+    \item Second contribution
+    \item Third contribution
+\end{enumerate}
+
+\section{Related Work}
+
+Discuss prior work in the field and how your research builds upon or differs from existing approaches.
+
+\section{Methodology}
+
+\subsection{Problem Formulation}
+
+Let $X$ denote the input space and $Y$ the output space. We define our problem as:
+
+\begin{equation}
+\min_{f \in \mathcal{F}} \mathbb{E}_{(x,y) \sim \mathcal{D}} [\ell(f(x), y)]
+\label{eq:objective}
+\end{equation}
+
+where $\ell$ is the loss function and $\mathcal{D}$ is the data distribution.
+
+\subsection{Proposed Approach}
+
+Describe your methodology in detail.
+
+\begin{theorem}
+Statement of your main theoretical result.
+\end{theorem}
+
+\begin{proof}
+Proof of the theorem goes here.
+\end{proof}
+
+\section{Experiments}
+
+\subsection{Experimental Setup}
+
+Describe your experimental setup, including datasets, baselines, and evaluation metrics.
+
+\subsection{Results}
+
+% Example table
+\begin{table}[htbp]
+\centering
+\caption{Experimental Results}
+\label{tab:results}
+\begin{tabular}{|l|c|c|c|}
+\hline
+\textbf{Method} & \textbf{Metric 1} & \textbf{Metric 2} & \textbf{Metric 3} \\
+\hline
+Baseline 1 & 0.85 & 0.72 & 0.91 \\
+Baseline 2 & 0.87 & 0.74 & 0.89 \\
+\textbf{Ours} & \textbf{0.92} & \textbf{0.81} & \textbf{0.95} \\
+\hline
+\end{tabular}
+\end{table}
+
+As shown in Table~\ref{tab:results}, our method outperforms all baselines.
+
+\section{Discussion}
+
+Discuss the implications of your findings and any limitations of your approach.
+
+\section{Conclusion}
+
+Summarize your main findings and suggest directions for future work.
+
+\section*{Acknowledgments}
+We thank the reviewers for their helpful comments. This work was supported by...
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}

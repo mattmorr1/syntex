@@ -1,0 +1,167 @@
+\documentclass[11pt]{article}
+
+% Packages
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{tcolorbox}
+\usepackage{tikz}
+
+% Colors
+\definecolor{problemcolor}{RGB}{70, 130, 180}
+\definecolor{solutioncolor}{RGB}{34, 139, 34}
+\definecolor{hintcolor}{RGB}{255, 140, 0}
+
+% Custom environments
+\theoremstyle{definition}
+\newtheorem{problem}{Problem}
+\newtheorem*{bonus}{Bonus Problem}
+
+\newenvironment{solution}{
+    \begin{tcolorbox}[colback=solutioncolor!5, colframe=solutioncolor!50, title=Solution]
+}{
+    \end{tcolorbox}
+}
+
+\newenvironment{hint}{
+    \begin{tcolorbox}[colback=hintcolor!5, colframe=hintcolor!50, title=Hint]
+}{
+    \end{tcolorbox}
+}
+
+% Header
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{Course Name}
+\chead{Problem Set \#X}
+\rhead{Due: [Date]}
+\lfoot{Name: \underline{\hspace{3cm}}}
+\rfoot{Page \thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0.4pt}
+
+% Title
+\title{\vspace{-2em}\textbf{Problem Set X}\\[0.3em]
+\large Course Name\\
+\normalsize Instructor: Professor Name}
+\author{}
+\date{Due: Month Day, Year}
+
+\begin{document}
+
+\maketitle
+\thispagestyle{fancy}
+
+\noindent\textbf{Instructions:}
+\begin{itemize}[leftmargin=*]
+    \item Show all your work clearly.
+    \item Justify each step of your solutions.
+    \item You may collaborate with classmates, but write your own solutions.
+    \item Late submissions will not be accepted.
+\end{itemize}
+
+\vspace{1em}
+\hrule
+\vspace{1em}
+
+\begin{problem}[10 points]
+\textbf{Linear Algebra Basics}
+
+Let $A = \begin{pmatrix} 1 & 2 \\ 3 & 4 \end{pmatrix}$ and $B = \begin{pmatrix} 5 & 6 \\ 7 & 8 \end{pmatrix}$.
+
+\begin{enumerate}[label=(\alph*)]
+    \item Compute $AB$.
+    \item Find the eigenvalues of $A$.
+    \item Is $A$ invertible? If so, find $A^{-1}$.
+\end{enumerate}
+\end{problem}
+
+\begin{solution}
+% Your solution here
+\textbf{(a)} Computing $AB$:
+\[
+AB = \begin{pmatrix} 1 & 2 \\ 3 & 4 \end{pmatrix} \begin{pmatrix} 5 & 6 \\ 7 & 8 \end{pmatrix} = \begin{pmatrix} 19 & 22 \\ 43 & 50 \end{pmatrix}
+\]
+
+\textbf{(b)} Eigenvalues of $A$:
+The characteristic polynomial is $\det(A - \lambda I) = \lambda^2 - 5\lambda - 2 = 0$.
+\[
+\lambda = \frac{5 \pm \sqrt{33}}{2}
+\]
+
+\textbf{(c)} $\det(A) = 4 - 6 = -2 \neq 0$, so $A$ is invertible:
+\[
+A^{-1} = \frac{1}{-2}\begin{pmatrix} 4 & -2 \\ -3 & 1 \end{pmatrix} = \begin{pmatrix} -2 & 1 \\ 3/2 & -1/2 \end{pmatrix}
+\]
+\end{solution}
+
+\vspace{1em}
+
+\begin{problem}[15 points]
+\textbf{Calculus}
+
+Evaluate the following integrals:
+
+\begin{enumerate}[label=(\alph*)]
+    \item $\displaystyle\int_0^{\pi} \sin^2(x) \, dx$
+    \item $\displaystyle\int \frac{1}{x^2 + 4x + 5} \, dx$
+    \item $\displaystyle\int_0^1 x e^{-x^2} \, dx$
+\end{enumerate}
+\end{problem}
+
+\begin{hint}
+For part (b), complete the square in the denominator.
+\end{hint}
+
+\begin{solution}
+% Your solution here
+\textbf{(a)} Using the identity $\sin^2(x) = \frac{1 - \cos(2x)}{2}$:
+\[
+\int_0^{\pi} \sin^2(x) \, dx = \int_0^{\pi} \frac{1 - \cos(2x)}{2} \, dx = \frac{\pi}{2}
+\]
+
+% Continue with parts (b) and (c)
+\end{solution}
+
+\vspace{1em}
+
+\begin{problem}[20 points]
+\textbf{Proof}
+
+Prove by induction that for all positive integers $n$:
+\[
+\sum_{k=1}^{n} k^2 = \frac{n(n+1)(2n+1)}{6}
+\]
+\end{problem}
+
+\begin{solution}
+% Your solution here
+\textbf{Base Case:} For $n = 1$:
+\[
+\text{LHS} = 1^2 = 1, \quad \text{RHS} = \frac{1 \cdot 2 \cdot 3}{6} = 1 \quad \checkmark
+\]
+
+\textbf{Inductive Step:} Assume true for $n = k$. Then for $n = k+1$:
+% Continue the proof...
+\end{solution}
+
+\vspace{1em}
+
+\begin{bonus}
+\textbf{Challenge Problem} (5 extra points)
+
+Prove that $e$ is irrational.
+\end{bonus}
+
+\vspace{2em}
+\hrule
+\vspace{1em}
+\begin{center}
+\textit{End of Problem Set}
+\end{center}
+
+\end{document}
