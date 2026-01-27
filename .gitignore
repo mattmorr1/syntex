@@ -2,6 +2,7 @@
 .env
 .env.local
 .env.production
+env.yaml
 
 # Firebase configuration
 firebase-key.json
@@ -11,7 +12,6 @@ firebase-key-*.json
 *.json
 !package.json
 !package-lock.json
-!vercel.json
 !tsconfig.json
 !tsconfig.node.json
 

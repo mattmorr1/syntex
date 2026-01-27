@@ -45,6 +45,7 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     password: str
     username: str
+    invite_code: Optional[str] = None
 
 class ResetPasswordRequest(BaseModel):
     email: EmailStr
@@ -137,10 +138,10 @@ class ChatHistory(BaseModel):
     messages: List[ChatMessage]
 
 class AdminStats(BaseModel):
-    total_users: int
-    total_projects: int
-    total_tokens: int
-    active_today: int
+    totalUsers: int
+    totalProjects: int
+    totalTokens: int
+    activeToday: int
 
 class FeedbackRequest(BaseModel):
     feedback: str

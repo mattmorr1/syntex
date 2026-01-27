@@ -28,10 +28,10 @@ async def get_all_users(admin: dict = Depends(get_admin_user)):
 async def get_stats(admin: dict = Depends(get_admin_user)):
     stats = await db_service.get_stats()
     return AdminStats(
-        total_users=stats["totalUsers"],
-        total_projects=stats["totalProjects"],
-        total_tokens=stats["totalTokens"],
-        active_today=stats["activeToday"]
+        totalUsers=stats["totalUsers"],
+        totalProjects=stats["totalProjects"],
+        totalTokens=stats["totalTokens"],
+        activeToday=stats["activeToday"]
     )
 
 @router.post("/user/{uid}/reset-tokens")
@@ -52,3 +52,25 @@ async def delete_user(uid: str, admin: dict = Depends(get_admin_user)):
     
     await db_service.delete_user(uid)
     return {"message": "User deleted successfully"}
+
+# Invite management
+@router.get("/invites")
+async def get_invites(admin: dict = Depends(get_admin_user)):
+    invites = await db_service.get_all_invites()
+    return invites
+
+@router.post("/invites")
+async def create_invite(request: dict, admin: dict = Depends(get_admin_user)):
+    uses = request.get("uses", 1)
+    if uses < 1 or uses > 100:
+        raise HTTPException(status_code=400, detail="Uses must be between 1 and 100")
+    
+    invite = await db_service.create_invite(admin["uid"], uses)
+    return invite
+
+@router.delete("/invites/{code}")
+async def deactivate_invite(code: str, admin: dict = Depends(get_admin_user)):
+    success = await db_service.deactivate_invite(code)
+    if not success:
+        raise HTTPException(status_code=404, detail="Invite not found")
+    return {"message": "Invite deactivated"}

@@ -28,6 +28,7 @@ interface EditorState {
   setProject: (project: Project | null) => void;
   setActiveFile: (fileName: string | null) => void;
   updateFileContent: (fileName: string, content: string) => void;
+  setProjectName: (name: string) => void;
   setPdfUrl: (url: string | null) => void;
   setCompiling: (isCompiling: boolean) => void;
   setCompileError: (error: string | null) => void;
@@ -60,6 +61,13 @@ export const useEditorStore = create<EditorState>((set) => ({
     return {
       currentProject: { ...state.currentProject, files },
       unsavedChanges: true,
+    };
+  }),
+  
+  setProjectName: (name) => set((state) => {
+    if (!state.currentProject) return state;
+    return {
+      currentProject: { ...state.currentProject, name },
     };
   }),
   

@@ -12,19 +12,23 @@ import {
   CircularProgress,
   InputAdornment,
   IconButton,
+  Divider,
 } from '@mui/material';
-import { Visibility, VisibilityOff } from '@mui/icons-material';
+import { Visibility, VisibilityOff, Google } from '@mui/icons-material';
 import { useAuth } from '../../hooks/useAuth';
 
 export function Register() {
-  const { register } = useAuth();
+  const { register, loginWithGoogle, isFirebaseEnabled } = useAuth();
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [inviteCode, setInviteCode] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
+  const [needsInvite, setNeedsInvite] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -43,11 +47,29 @@ export function Register() {
     setLoading(true);
     
     try {
-      await register(email, password, username);
+      await register(email, password, username, inviteCode || undefined);
     } catch (err: any) {
       setError(err.message || 'Registration failed');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleGoogleSignup = async () => {
+    setError('');
+    setGoogleLoading(true);
+    
+    try {
+      await loginWithGoogle(inviteCode || undefined);
+    } catch (err: any) {
+      if (err.message === 'INVITE_REQUIRED') {
+        setNeedsInvite(true);
+        setError('Please enter an invite code to create an account');
+      } else {
+        setError(err.message || 'Google signup failed');
+      }
+    } finally {
+      setGoogleLoading(false);
     }
   };
 
@@ -64,14 +86,48 @@ export function Register() {
     >
       <Card sx={{ maxWidth: 400, width: '100%' }}>
         <CardContent sx={{ p: 4 }}>
-          <Typography variant="h4" fontWeight={600} textAlign="center" mb={1}>
+          <Typography variant="h5" fontWeight={600} textAlign="center" mb={1}>
             Create Account
           </Typography>
-          <Typography color="text.secondary" textAlign="center" mb={4}>
-            Start creating LaTeX documents with AI
+          <Typography variant="body2" color="text.secondary" textAlign="center" mb={3}>
+            Invite-only access
           </Typography>
 
-          {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
+          {error && <Alert severity="error" sx={{ mb: 2, fontSize: 13 }}>{error}</Alert>}
+
+          {/* Invite Code - Always visible */}
+          <TextField
+            fullWidth
+            label="Invite Code"
+            value={inviteCode}
+            onChange={(e) => setInviteCode(e.target.value.toUpperCase())}
+            required
+            placeholder="Enter your invite code"
+            sx={{ mb: 2 }}
+            inputProps={{ style: { textTransform: 'uppercase', letterSpacing: 2 } }}
+          />
+
+          {isFirebaseEnabled && (
+            <>
+              <Button
+                fullWidth
+                variant="outlined"
+                size="large"
+                startIcon={googleLoading ? <CircularProgress size={18} /> : <Google />}
+                onClick={handleGoogleSignup}
+                disabled={googleLoading || loading || !inviteCode.trim()}
+                sx={{ mb: 2 }}
+              >
+                Continue with Google
+              </Button>
+
+              <Divider sx={{ my: 2 }}>
+                <Typography variant="caption" color="text.secondary">
+                  or
+                </Typography>
+              </Divider>
+            </>
+          )}
 
           <Box component="form" onSubmit={handleSubmit}>
             <TextField
@@ -80,6 +136,7 @@ export function Register() {
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               required
+              size="small"
               sx={{ mb: 2 }}
             />
             
@@ -90,6 +147,7 @@ export function Register() {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
+              size="small"
               sx={{ mb: 2 }}
             />
             
@@ -100,12 +158,13 @@ export function Register() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
+              size="small"
               sx={{ mb: 2 }}
               InputProps={{
                 endAdornment: (
                   <InputAdornment position="end">
-                    <IconButton onClick={() => setShowPassword(!showPassword)} edge="end">
-                      {showPassword ? <VisibilityOff /> : <Visibility />}
+                    <IconButton onClick={() => setShowPassword(!showPassword)} edge="end" size="small">
+                      {showPassword ? <VisibilityOff fontSize="small" /> : <Visibility fontSize="small" />}
                     </IconButton>
                   </InputAdornment>
                 ),
@@ -119,6 +178,7 @@ export function Register() {
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
               required
+              size="small"
               sx={{ mb: 3 }}
             />
 
@@ -126,14 +186,13 @@ export function Register() {
               type="submit"
               fullWidth
               variant="contained"
-              size="large"
-              disabled={loading}
+              disabled={loading || googleLoading || !inviteCode.trim()}
               sx={{ mb: 2 }}
             >
-              {loading ? <CircularProgress size={24} /> : 'Create Account'}
+              {loading ? <CircularProgress size={20} /> : 'Create Account'}
             </Button>
 
-            <Typography variant="body2" textAlign="center">
+            <Typography variant="body2" textAlign="center" sx={{ fontSize: 13 }}>
               Already have an account?{' '}
               <Link component={RouterLink} to="/login">
                 Sign in

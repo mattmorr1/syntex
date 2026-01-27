@@ -39,6 +39,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY config.py .
+COPY main.py .
+COPY cli.py .
 COPY api/ ./api/
 COPY templates/ ./templates/
 

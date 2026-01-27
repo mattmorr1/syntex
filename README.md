@@ -48,11 +48,32 @@ docker-compose up -d
 |----------|-------------|---------|
 | `GEMINI_API_KEY` | Google Gemini API key | Required |
 | `FIREBASE_KEY_PATH` | Path to Firebase service account JSON | `firebase-key.json` |
+| `VITE_FIREBASE_API_KEY` | Firebase client API key | Required for Google Sign-In |
+| `VITE_FIREBASE_AUTH_DOMAIN` | Firebase auth domain | Required for Google Sign-In |
+| `VITE_FIREBASE_PROJECT_ID` | Firebase project ID | Required for Google Sign-In |
 | `ADMIN_EMAIL` | Admin user email | `mmorristwo@gmail.com` |
 | `ADMIN_USERNAME` | Admin username | `matt` |
 | `ADMIN_PASSWORD` | Admin password | Required for production |
 | `LATEX_COMPILER` | Default LaTeX compiler | `pdflatex` |
 | `LATEX_TIMEOUT` | Compilation timeout (seconds) | `60` |
+
+## Firebase Setup for Google Sign-In
+
+1. Go to [Firebase Console](https://console.firebase.google.com/)
+2. Create a new project or select existing
+3. Enable Authentication > Sign-in method > Google
+4. Go to Project Settings > General > Your apps > Add web app
+5. Copy the config values to your `.env` file:
+   ```
+   VITE_FIREBASE_API_KEY=...
+   VITE_FIREBASE_AUTH_DOMAIN=...
+   VITE_FIREBASE_PROJECT_ID=...
+   VITE_FIREBASE_STORAGE_BUCKET=...
+   VITE_FIREBASE_MESSAGING_SENDER_ID=...
+   VITE_FIREBASE_APP_ID=...
+   ```
+6. Go to Project Settings > Service accounts > Generate new private key
+7. Save as `firebase-key.json` in project root
 
 ## Project Structure
 

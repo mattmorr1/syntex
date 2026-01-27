@@ -12,17 +12,19 @@ import {
   CircularProgress,
   InputAdornment,
   IconButton,
+  Divider,
 } from '@mui/material';
-import { Visibility, VisibilityOff } from '@mui/icons-material';
+import { Visibility, VisibilityOff, Google } from '@mui/icons-material';
 import { useAuth } from '../../hooks/useAuth';
 
 export function Login() {
-  const { login } = useAuth();
+  const { login, loginWithGoogle, isFirebaseEnabled } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -35,6 +37,19 @@ export function Login() {
       setError(err.message || 'Login failed');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleGoogleLogin = async () => {
+    setError('');
+    setGoogleLoading(true);
+    
+    try {
+      await loginWithGoogle();
+    } catch (err: any) {
+      setError(err.message || 'Google login failed');
+    } finally {
+      setGoogleLoading(false);
     }
   };
 
@@ -59,6 +74,28 @@ export function Login() {
           </Typography>
 
           {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
+
+          {isFirebaseEnabled && (
+            <>
+              <Button
+                fullWidth
+                variant="outlined"
+                size="large"
+                startIcon={googleLoading ? <CircularProgress size={20} /> : <Google />}
+                onClick={handleGoogleLogin}
+                disabled={googleLoading || loading}
+                sx={{ mb: 2 }}
+              >
+                Continue with Google
+              </Button>
+
+              <Divider sx={{ my: 2 }}>
+                <Typography variant="caption" color="text.secondary">
+                  or
+                </Typography>
+              </Divider>
+            </>
+          )}
 
           <Box component="form" onSubmit={handleSubmit}>
             <TextField
@@ -101,7 +138,7 @@ export function Login() {
               fullWidth
               variant="contained"
               size="large"
-              disabled={loading}
+              disabled={loading || googleLoading}
               sx={{ mb: 2 }}
             >
               {loading ? <CircularProgress size={24} /> : 'Sign In'}
