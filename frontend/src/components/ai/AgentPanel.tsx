@@ -1,29 +1,25 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import {
-  Drawer,
   Box,
   Typography,
   TextField,
   Button,
   IconButton,
-  Divider,
   CircularProgress,
   Chip,
   FormControl,
   Select,
   MenuItem,
-  InputLabel,
   Collapse,
   Alert,
 } from '@mui/material';
 import {
-  Close,
   Send,
   Check,
   Clear,
   ExpandMore,
   ExpandLess,
-  AutoFixHigh,
+  SmartToy,
 } from '@mui/icons-material';
 import { api } from '../../services/api';
 
@@ -37,14 +33,12 @@ interface DiffChange {
 }
 
 interface AgentPanelProps {
-  open: boolean;
-  onClose: () => void;
   projectId: string;
   document: string;
   onApplyChanges: (newContent: string) => void;
 }
 
-export function AgentPanel({ open, onClose, projectId, document, onApplyChanges }: AgentPanelProps) {
+export function AgentPanel({ projectId, document, onApplyChanges }: AgentPanelProps) {
   const [instruction, setInstruction] = useState('');
   const [model, setModel] = useState<'flash' | 'pro'>('pro');
   const [loading, setLoading] = useState(false);
@@ -52,6 +46,14 @@ export function AgentPanel({ open, onClose, projectId, document, onApplyChanges 
   const [explanation, setExplanation] = useState('');
   const [changes, setChanges] = useState<DiffChange[]>([]);
   const [tokensUsed, setTokensUsed] = useState(0);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (scrollRef.current && (explanation || changes.length > 0)) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [explanation, changes]);
 
   const handleSubmit = useCallback(async () => {
     if (!instruction.trim()) return;
@@ -73,6 +75,13 @@ export function AgentPanel({ open, onClose, projectId, document, onApplyChanges 
     }
   }, [instruction, projectId, document, model]);
 
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSubmit();
+    }
+  };
+
   const handleAcceptChange = (index: number) => {
     setChanges(prev => prev.map((c, i) => 
       i === index ? { ...c, accepted: true } : c
@@ -89,7 +98,6 @@ export function AgentPanel({ open, onClose, projectId, document, onApplyChanges 
     const acceptedChanges = changes.filter(c => c.accepted === true);
     if (acceptedChanges.length === 0) return;
     
-    // Apply changes in reverse order to preserve line numbers
     let newDoc = document;
     const lines = newDoc.split('\n');
     
@@ -106,7 +114,6 @@ export function AgentPanel({ open, onClose, projectId, document, onApplyChanges 
     newDoc = lines.join('\n');
     onApplyChanges(newDoc);
     
-    // Reset state
     setChanges([]);
     setExplanation('');
     setInstruction('');
@@ -116,150 +123,191 @@ export function AgentPanel({ open, onClose, projectId, document, onApplyChanges 
   const pendingCount = changes.filter(c => c.accepted === undefined).length;
 
   return (
-    <Drawer
-      anchor="right"
-      open={open}
-      onClose={onClose}
-      variant="persistent"
-      sx={{
-        '& .MuiDrawer-paper': {
-          width: 400,
-          boxSizing: 'border-box',
-        },
-      }}
-    >
-      <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-        {/* Header */}
-        <Box sx={{ 
-          p: 2, 
-          display: 'flex', 
-          alignItems: 'center', 
-          justifyContent: 'space-between',
-          borderBottom: 1,
-          borderColor: 'divider'
-        }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <AutoFixHigh color="primary" />
-            <Typography variant="h6">AI Agent</Typography>
-          </Box>
-          <IconButton onClick={onClose} size="small">
-            <Close />
-          </IconButton>
-        </Box>
+    <Box sx={{ 
+      height: '100%', 
+      display: 'flex', 
+      flexDirection: 'column',
+      bgcolor: 'background.paper',
+    }}>
+      {/* Header */}
+      <Box sx={{ 
+        px: 1.5, 
+        py: 1,
+        display: 'flex', 
+        alignItems: 'center', 
+        gap: 1,
+        borderBottom: 1,
+        borderColor: 'divider',
+      }}>
+        <SmartToy sx={{ fontSize: 16 }} color="primary" />
+        <Typography variant="caption" fontWeight={600} letterSpacing={0.5}>
+          AI ASSISTANT
+        </Typography>
+      </Box>
 
-        {/* Input */}
-        <Box sx={{ p: 2, borderBottom: 1, borderColor: 'divider' }}>
-          <TextField
-            fullWidth
-            multiline
-            rows={3}
-            placeholder="Describe what you want to change..."
-            value={instruction}
-            onChange={(e) => setInstruction(e.target.value)}
-            disabled={loading}
-            sx={{ mb: 2 }}
-          />
-          
-          <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
-            <FormControl size="small" sx={{ minWidth: 100 }}>
-              <InputLabel>Model</InputLabel>
-              <Select
-                value={model}
-                label="Model"
-                onChange={(e) => setModel(e.target.value as 'flash' | 'pro')}
-                disabled={loading}
-              >
-                <MenuItem value="flash">Flash</MenuItem>
-                <MenuItem value="pro">Pro</MenuItem>
-              </Select>
-            </FormControl>
-            
-            <Button
-              variant="contained"
-              onClick={handleSubmit}
-              disabled={loading || !instruction.trim()}
-              startIcon={loading ? <CircularProgress size={16} /> : <Send />}
-              sx={{ flex: 1 }}
-            >
-              {loading ? 'Processing...' : 'Send'}
-            </Button>
-          </Box>
-        </Box>
-
-        {/* Results */}
-        <Box sx={{ flex: 1, overflow: 'auto', p: 2 }}>
-          {error && (
-            <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>
-          )}
-          
-          {explanation && (
-            <Box sx={{ mb: 3 }}>
-              <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-                Agent Response
+      {/* Messages */}
+      <Box 
+        ref={scrollRef}
+        sx={{ 
+          flex: 1, 
+          overflow: 'auto', 
+          p: 1.5,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 1.5,
+        }}
+      >
+        {error && (
+          <Alert severity="error" sx={{ py: 0.5, fontSize: 12 }}>{error}</Alert>
+        )}
+        
+        {explanation && (
+          <Box sx={{ 
+            bgcolor: 'action.hover', 
+            borderRadius: 1, 
+            p: 1.5,
+          }}>
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+              Response
+            </Typography>
+            <Typography variant="body2" sx={{ fontSize: 12, lineHeight: 1.5 }}>
+              {explanation}
+            </Typography>
+            {tokensUsed > 0 && (
+              <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block', fontSize: 10 }}>
+                {tokensUsed} tokens
               </Typography>
-              <Typography variant="body2">{explanation}</Typography>
-              {tokensUsed > 0 && (
-                <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
-                  Tokens used: {tokensUsed}
-                </Typography>
-              )}
-            </Box>
-          )}
-          
-          {changes.length > 0 && (
-            <>
-              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
-                <Typography variant="subtitle2" color="text.secondary">
-                  Proposed Changes ({changes.length})
-                </Typography>
-                <Box sx={{ display: 'flex', gap: 1 }}>
-                  {pendingCount > 0 && (
-                    <Chip label={`${pendingCount} pending`} size="small" color="warning" variant="outlined" />
-                  )}
-                  {acceptedCount > 0 && (
-                    <Chip label={`${acceptedCount} accepted`} size="small" color="success" variant="outlined" />
-                  )}
-                </Box>
+            )}
+          </Box>
+        )}
+        
+        {changes.length > 0 && (
+          <Box>
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
+              <Typography variant="caption" color="text.secondary" fontWeight={500}>
+                Changes ({changes.length})
+              </Typography>
+              <Box sx={{ display: 'flex', gap: 0.5 }}>
+                {pendingCount > 0 && (
+                  <Chip label={pendingCount} size="small" color="warning" sx={{ height: 18, fontSize: 10 }} />
+                )}
+                {acceptedCount > 0 && (
+                  <Chip label={acceptedCount} size="small" color="success" sx={{ height: 18, fontSize: 10 }} />
+                )}
               </Box>
-              
-              {changes.map((change, index) => (
-                <DiffCard
-                  key={index}
-                  change={change}
-                  onAccept={() => handleAcceptChange(index)}
-                  onReject={() => handleRejectChange(index)}
-                />
-              ))}
-            </>
-          )}
-        </Box>
+            </Box>
+            
+            {changes.map((change, index) => (
+              <CompactDiffCard
+                key={index}
+                change={change}
+                onAccept={() => handleAcceptChange(index)}
+                onReject={() => handleRejectChange(index)}
+              />
+            ))}
+          </Box>
+        )}
 
-        {/* Footer */}
-        {acceptedCount > 0 && (
-          <Box sx={{ p: 2, borderTop: 1, borderColor: 'divider' }}>
-            <Button
-              fullWidth
-              variant="contained"
-              color="success"
-              onClick={handleApplyAll}
-              startIcon={<Check />}
-            >
-              Apply {acceptedCount} Change{acceptedCount !== 1 ? 's' : ''}
-            </Button>
+        {!explanation && !error && changes.length === 0 && !loading && (
+          <Box sx={{ 
+            flex: 1, 
+            display: 'flex', 
+            alignItems: 'center', 
+            justifyContent: 'center',
+            opacity: 0.5,
+          }}>
+            <Typography variant="caption" color="text.secondary" textAlign="center">
+              Ask me to help edit your document
+            </Typography>
+          </Box>
+        )}
+
+        {loading && (
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, p: 1 }}>
+            <CircularProgress size={14} />
+            <Typography variant="caption" color="text.secondary">Thinking...</Typography>
           </Box>
         )}
       </Box>
-    </Drawer>
+
+      {/* Apply Button */}
+      {acceptedCount > 0 && (
+        <Box sx={{ px: 1.5, pb: 1 }}>
+          <Button
+            fullWidth
+            variant="contained"
+            color="success"
+            size="small"
+            onClick={handleApplyAll}
+            startIcon={<Check sx={{ fontSize: 16 }} />}
+            sx={{ fontSize: 12, py: 0.5 }}
+          >
+            Apply {acceptedCount} change{acceptedCount !== 1 ? 's' : ''}
+          </Button>
+        </Box>
+      )}
+
+      {/* Input */}
+      <Box sx={{ 
+        p: 1.5, 
+        borderTop: 1, 
+        borderColor: 'divider',
+        bgcolor: 'background.default',
+      }}>
+        <TextField
+          inputRef={inputRef}
+          fullWidth
+          multiline
+          maxRows={4}
+          placeholder="What would you like to change?"
+          value={instruction}
+          onChange={(e) => setInstruction(e.target.value)}
+          onKeyDown={handleKeyDown}
+          disabled={loading}
+          size="small"
+          sx={{ 
+            mb: 1,
+            '& .MuiInputBase-root': { fontSize: 12 },
+            '& textarea': { lineHeight: 1.4 },
+          }}
+        />
+        
+        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+          <FormControl size="small" sx={{ minWidth: 70 }}>
+            <Select
+              value={model}
+              onChange={(e) => setModel(e.target.value as 'flash' | 'pro')}
+              disabled={loading}
+              sx={{ fontSize: 11, '& .MuiSelect-select': { py: 0.5, px: 1 } }}
+            >
+              <MenuItem value="flash" sx={{ fontSize: 11 }}>Flash</MenuItem>
+              <MenuItem value="pro" sx={{ fontSize: 11 }}>Pro</MenuItem>
+            </Select>
+          </FormControl>
+          
+          <Button
+            variant="contained"
+            onClick={handleSubmit}
+            disabled={loading || !instruction.trim()}
+            size="small"
+            sx={{ flex: 1, fontSize: 12, py: 0.5 }}
+            endIcon={loading ? <CircularProgress size={12} /> : <Send sx={{ fontSize: 14 }} />}
+          >
+            Send
+          </Button>
+        </Box>
+      </Box>
+    </Box>
   );
 }
 
-interface DiffCardProps {
+interface CompactDiffCardProps {
   change: DiffChange;
   onAccept: () => void;
   onReject: () => void;
 }
 
-function DiffCard({ change, onAccept, onReject }: DiffCardProps) {
+function CompactDiffCard({ change, onAccept, onReject }: CompactDiffCardProps) {
   const [expanded, setExpanded] = useState(true);
   
   const getBorderColor = () => {
@@ -271,18 +319,19 @@ function DiffCard({ change, onAccept, onReject }: DiffCardProps) {
   return (
     <Box
       sx={{
-        mb: 2,
-        borderRadius: 1,
-        border: 2,
+        mb: 1,
+        borderRadius: 0.5,
+        border: 1,
         borderColor: getBorderColor(),
         overflow: 'hidden',
         opacity: change.accepted === false ? 0.5 : 1,
+        fontSize: 11,
       }}
     >
-      {/* Header */}
       <Box
         sx={{
-          p: 1.5,
+          px: 1,
+          py: 0.5,
           bgcolor: 'action.hover',
           display: 'flex',
           alignItems: 'center',
@@ -291,76 +340,64 @@ function DiffCard({ change, onAccept, onReject }: DiffCardProps) {
         }}
         onClick={() => setExpanded(!expanded)}
       >
-        <Box>
-          <Typography variant="body2" fontWeight={500}>
-            Lines {change.start_line}-{change.end_line}
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          <Typography variant="caption" fontWeight={500} sx={{ fontSize: 11 }}>
+            L{change.start_line}-{change.end_line}
           </Typography>
-          <Typography variant="caption" color="text.secondary">
+          <Typography variant="caption" color="text.secondary" sx={{ ml: 1, fontSize: 10 }} noWrap>
             {change.reason}
           </Typography>
         </Box>
-        {expanded ? <ExpandLess /> : <ExpandMore />}
+        {expanded ? <ExpandLess sx={{ fontSize: 16 }} /> : <ExpandMore sx={{ fontSize: 16 }} />}
       </Box>
       
       <Collapse in={expanded}>
-        {/* Diff View */}
-        <Box sx={{ fontFamily: 'monospace', fontSize: 12 }}>
-          {/* Removed */}
-          <Box sx={{ bgcolor: 'error.dark', color: 'error.contrastText', p: 1.5, opacity: 0.8 }}>
-            <Typography variant="caption" sx={{ display: 'block', mb: 0.5, opacity: 0.7 }}>
-              - Remove
-            </Typography>
+        <Box sx={{ fontFamily: 'monospace', fontSize: 10 }}>
+          <Box sx={{ bgcolor: 'error.dark', color: 'error.contrastText', px: 1, py: 0.5 }}>
             <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-              {change.original}
+              - {change.original.substring(0, 200)}{change.original.length > 200 ? '...' : ''}
             </pre>
           </Box>
           
-          {/* Added */}
-          <Box sx={{ bgcolor: 'success.dark', color: 'success.contrastText', p: 1.5, opacity: 0.9 }}>
-            <Typography variant="caption" sx={{ display: 'block', mb: 0.5, opacity: 0.7 }}>
-              + Add
-            </Typography>
+          <Box sx={{ bgcolor: 'success.dark', color: 'success.contrastText', px: 1, py: 0.5 }}>
             <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-              {change.replacement}
+              + {change.replacement.substring(0, 200)}{change.replacement.length > 200 ? '...' : ''}
             </pre>
           </Box>
         </Box>
         
-        {/* Actions */}
         {change.accepted === undefined && (
-          <Box sx={{ p: 1, display: 'flex', gap: 1, justifyContent: 'flex-end', bgcolor: 'background.paper' }}>
-            <Button
+          <Box sx={{ p: 0.5, display: 'flex', gap: 0.5, justifyContent: 'flex-end', bgcolor: 'background.paper' }}>
+            <IconButton
               size="small"
-              variant="outlined"
               color="error"
-              startIcon={<Clear />}
               onClick={(e) => { e.stopPropagation(); onReject(); }}
+              sx={{ p: 0.25 }}
             >
-              Reject
-            </Button>
-            <Button
+              <Clear sx={{ fontSize: 14 }} />
+            </IconButton>
+            <IconButton
               size="small"
-              variant="contained"
               color="success"
-              startIcon={<Check />}
               onClick={(e) => { e.stopPropagation(); onAccept(); }}
+              sx={{ p: 0.25 }}
             >
-              Accept
-            </Button>
+              <Check sx={{ fontSize: 14 }} />
+            </IconButton>
           </Box>
         )}
         
         {change.accepted === true && (
-          <Box sx={{ p: 1, bgcolor: 'success.light', display: 'flex', alignItems: 'center', gap: 1 }}>
-            <Check fontSize="small" color="success" />
-            <Typography variant="caption" color="success.dark">Accepted</Typography>
+          <Box sx={{ px: 1, py: 0.25, bgcolor: 'success.light', display: 'flex', alignItems: 'center', gap: 0.5 }}>
+            <Check sx={{ fontSize: 12 }} color="success" />
+            <Typography variant="caption" color="success.dark" sx={{ fontSize: 10 }}>Accepted</Typography>
           </Box>
         )}
         
         {change.accepted === false && (
-          <Box sx={{ p: 1, bgcolor: 'error.light', display: 'flex', alignItems: 'center', gap: 1 }}>
-            <Clear fontSize="small" color="error" />
-            <Typography variant="caption" color="error.dark">Rejected</Typography>
+          <Box sx={{ px: 1, py: 0.25, bgcolor: 'error.light', display: 'flex', alignItems: 'center', gap: 0.5 }}>
+            <Clear sx={{ fontSize: 12 }} color="error" />
+            <Typography variant="caption" color="error.dark" sx={{ fontSize: 10 }}>Rejected</Typography>
           </Box>
         )}
       </Collapse>

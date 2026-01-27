@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Box, Typography, CircularProgress } from '@mui/material';
+import { Box, CircularProgress, Typography } from '@mui/material';
 
 interface PdfViewerProps {
   url: string;
@@ -10,28 +10,31 @@ export function PdfViewer({ url, zoom }: PdfViewerProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
 
-  // Handle data URL (base64 PDF)
   const isDataUrl = url.startsWith('data:');
   
   return (
-    <Box
-      sx={{
-        width: '100%',
-        height: '100%',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-      }}
-    >
+    <Box sx={{ width: '100%', height: '100%', position: 'relative' }}>
       {loading && (
-        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', py: 4 }}>
-          <CircularProgress size={24} />
+        <Box sx={{ 
+          position: 'absolute', 
+          inset: 0, 
+          display: 'flex', 
+          alignItems: 'center', 
+          justifyContent: 'center',
+          zIndex: 1,
+        }}>
+          <CircularProgress size={20} />
         </Box>
       )}
       
       {error ? (
-        <Box sx={{ textAlign: 'center', py: 4 }}>
-          <Typography color="error">Failed to load PDF</Typography>
+        <Box sx={{ 
+          display: 'flex', 
+          alignItems: 'center', 
+          justifyContent: 'center', 
+          height: '100%' 
+        }}>
+          <Typography variant="caption" color="error">Failed to load PDF</Typography>
         </Box>
       ) : (
         <Box
@@ -40,7 +43,6 @@ export function PdfViewer({ url, zoom }: PdfViewerProps) {
             height: '100%',
             transform: `scale(${zoom / 100})`,
             transformOrigin: 'top center',
-            transition: 'transform 0.2s',
           }}
         >
           {isDataUrl ? (
@@ -49,25 +51,19 @@ export function PdfViewer({ url, zoom }: PdfViewerProps) {
               type="application/pdf"
               width="100%"
               height="100%"
-              style={{ border: 'none' }}
+              style={{ border: 'none', display: 'block' }}
               onLoad={() => setLoading(false)}
-              onError={() => {
-                setLoading(false);
-                setError(true);
-              }}
+              onError={() => { setLoading(false); setError(true); }}
             />
           ) : (
             <iframe
               src={url}
-              title="PDF Preview"
+              title="PDF"
               width="100%"
               height="100%"
-              style={{ border: 'none' }}
+              style={{ border: 'none', display: 'block' }}
               onLoad={() => setLoading(false)}
-              onError={() => {
-                setLoading(false);
-                setError(true);
-              }}
+              onError={() => { setLoading(false); setError(true); }}
             />
           )}
         </Box>

@@ -11,7 +11,6 @@ import { Register } from './components/auth/Register';
 import { ResetPassword } from './components/auth/ResetPassword';
 import { Home } from './components/Home';
 import { Editor } from './components/editor/Editor';
-import { History } from './components/History';
 import { AdminDashboard } from './components/admin/Dashboard';
 
 function ProtectedRoute({ children, adminOnly = false }: { children: React.ReactNode; adminOnly?: boolean }) {
@@ -61,11 +60,7 @@ function App() {
           </ProtectedRoute>
         } />
         
-        <Route path="/history" element={
-          <ProtectedRoute>
-            <Layout><History /></Layout>
-          </ProtectedRoute>
-        } />
+        <Route path="/history" element={<Navigate to="/" replace />} />
         
         <Route path="/admin" element={
           <ProtectedRoute adminOnly>

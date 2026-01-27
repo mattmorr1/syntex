@@ -57,6 +57,19 @@ async def save_project(request: ProjectUpdate, user: dict = Depends(get_current_
     
     return {"message": "Project saved", "project_id": request.project_id}
 
+@router.patch("/{project_id}/rename")
+async def rename_project(project_id: str, request: dict, user: dict = Depends(get_current_user)):
+    name = request.get("name")
+    if not name or not name.strip():
+        raise HTTPException(status_code=400, detail="Name is required")
+    
+    success = await db_service.update_project_name(project_id, user["uid"], name.strip())
+    
+    if not success:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    return {"message": "Project renamed", "name": name.strip()}
+
 @router.post("/duplicate-project/{project_id}")
 async def duplicate_project(project_id: str, user: dict = Depends(get_current_user)):
     project = await db_service.duplicate_project(project_id, user["uid"])

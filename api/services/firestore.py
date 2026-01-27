@@ -36,7 +36,7 @@ class FirestoreService:
             print(f"Firebase init failed: {e}")
             
         FirestoreService._initialized = True
-        self._dev_data = {"users": {}, "projects": {}, "chats": {}}
+        self._dev_data = {"users": {}, "projects": {}, "chats": {}, "invites": {}}
     
     # User operations
     async def create_user(self, uid: str, email: str, username: str, role: str = "user") -> Dict:
@@ -193,6 +193,21 @@ class FirestoreService:
             self._dev_data["projects"][project_id]["updated_at"] = datetime.utcnow()
         return True
     
+    async def update_project_name(self, project_id: str, uid: str, name: str) -> bool:
+        project = await self.get_project(project_id, uid)
+        if not project:
+            return False
+            
+        if self.enabled:
+            self.db.collection("projects").document(project_id).update({
+                "name": name,
+                "updated_at": datetime.utcnow()
+            })
+        else:
+            self._dev_data["projects"][project_id]["name"] = name
+            self._dev_data["projects"][project_id]["updated_at"] = datetime.utcnow()
+        return True
+    
     async def delete_project(self, project_id: str, uid: str) -> bool:
         project = await self.get_project(project_id, uid)
         if not project:
@@ -297,5 +312,88 @@ class FirestoreService:
             self.db.collection("feedback").document(feedback_id).set(feedback_data)
         
         return feedback_id
+    
+    # Invite codes
+    async def create_invite(self, created_by: str, uses: int = 1) -> Dict:
+        import uuid
+        import secrets
+        code = secrets.token_urlsafe(8)[:12].upper()
+        invite_data = {
+            "code": code,
+            "created_by": created_by,
+            "created_at": datetime.utcnow(),
+            "max_uses": uses,
+            "used_count": 0,
+            "used_by": [],
+            "active": True
+        }
+        
+        if self.enabled:
+            self.db.collection("invites").document(code).set(invite_data)
+        else:
+            self._dev_data["invites"][code] = invite_data
+        
+        return invite_data
+    
+    async def validate_invite(self, code: str) -> Optional[Dict]:
+        code = code.strip().upper()
+        if self.enabled:
+            doc = self.db.collection("invites").document(code).get()
+            if doc.exists:
+                data = doc.to_dict()
+                if data.get("active") and data.get("used_count", 0) < data.get("max_uses", 1):
+                    return data
+            return None
+        
+        invite = self._dev_data["invites"].get(code)
+        if invite and invite.get("active") and invite.get("used_count", 0) < invite.get("max_uses", 1):
+            return invite
+        return None
+    
+    async def use_invite(self, code: str, used_by_uid: str) -> bool:
+        code = code.strip().upper()
+        if self.enabled:
+            doc_ref = self.db.collection("invites").document(code)
+            doc = doc_ref.get()
+            if doc.exists:
+                data = doc.to_dict()
+                if data.get("active") and data.get("used_count", 0) < data.get("max_uses", 1):
+                    doc_ref.update({
+                        "used_count": firestore.Increment(1),
+                        "used_by": firestore.ArrayUnion([used_by_uid])
+                    })
+                    return True
+            return False
+        
+        invite = self._dev_data["invites"].get(code)
+        if invite and invite.get("active") and invite.get("used_count", 0) < invite.get("max_uses", 1):
+            invite["used_count"] += 1
+            invite["used_by"].append(used_by_uid)
+            return True
+        return False
+    
+    async def get_all_invites(self) -> List[Dict]:
+        if self.enabled:
+            invites = []
+            for doc in self.db.collection("invites").order_by("created_at", direction=firestore.Query.DESCENDING).stream():
+                data = doc.to_dict()
+                data["code"] = doc.id
+                invites.append(data)
+            return invites
+        return list(self._dev_data["invites"].values())
+    
+    async def deactivate_invite(self, code: str) -> bool:
+        code = code.strip().upper()
+        if self.enabled:
+            doc_ref = self.db.collection("invites").document(code)
+            if doc_ref.get().exists:
+                doc_ref.update({"active": False})
+                return True
+            return False
+        
+        if code in self._dev_data["invites"]:
+            self._dev_data["invites"][code]["active"] = False
+            return True
+        return False
 
 db_service = FirestoreService()

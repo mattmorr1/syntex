@@ -35,10 +35,16 @@ export const api = {
       body: JSON.stringify({ email, password }),
     }),
 
-  register: (email: string, password: string, username: string) =>
+  register: (email: string, password: string, username: string, inviteCode?: string) =>
     request<{ token: string; user: any }>('/auth/register', {
       method: 'POST',
-      body: JSON.stringify({ email, password, username }),
+      body: JSON.stringify({ email, password, username, invite_code: inviteCode }),
+    }),
+
+  googleAuth: (idToken: string, inviteCode?: string) =>
+    request<{ token: string; user: any }>('/auth/google', {
+      method: 'POST',
+      body: JSON.stringify({ id_token: idToken, invite_code: inviteCode }),
     }),
 
   resetPassword: (email: string) =>
@@ -66,6 +72,12 @@ export const api = {
   
   duplicateProject: (id: string) =>
     request<any>(`/duplicate-project/${id}`, { method: 'POST' }),
+  
+  renameProject: (id: string, name: string) =>
+    request<{ message: string; name: string }>(`/projects/${id}/rename`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name }),
+    }),
 
   // Compile
   compile: (projectId: string, mainFile: string, files: any[]) =>
@@ -116,6 +128,15 @@ export const api = {
   
   deleteUser: (uid: string) =>
     request<void>(`/admin/user/${uid}`, { method: 'DELETE' }),
+
+  // Invites
+  getInvites: () => request<any[]>('/admin/invites'),
+  
+  createInvite: (uses: number = 1) =>
+    request<any>('/admin/invites', { method: 'POST', body: JSON.stringify({ uses }) }),
+  
+  deactivateInvite: (code: string) =>
+    request<void>(`/admin/invites/${code}`, { method: 'DELETE' }),
 
   // Upload
   uploadFile: async (file: File, theme: string, customTheme?: string) => {

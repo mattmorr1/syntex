@@ -1,0 +1,6 @@
+- abstracting layer for ai agent (langchain?)
+- worried about prompting (rate limiting, prompt cap, config in admin?)
+- how to efficiently do autofill without wasting tokens?
+- is ux usable?
+- how does admin have control over backend?
+- more efficient way to create accounts?
