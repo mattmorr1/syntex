@@ -1,0 +1,52 @@
+# Ignore git
+.git/
+.gitignore
+
+# Ignore IDE
+.vscode/
+.idea/
+
+# Ignore local env files
+.env
+.env.local
+.env.production
+env.yaml
+
+# Ignore node_modules (rebuilt in Docker)
+node_modules/
+frontend/node_modules/
+
+# Ignore Python cache
+__pycache__/
+*.py[cod]
+*.so
+venv/
+.venv/
+
+# Ignore build artifacts
+*.egg-info/
+dist/
+build/
+
+# Ignore test files
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Ignore temp files
+*.tmp
+*.temp
+tmp/
+*.log
+
+# Ignore OS files
+.DS_Store
+Thumbs.db
+
+# DO NOT ignore these (explicitly include):
+# !api/
+# !frontend/
+# !templates/
+# !requirements.txt
+# !Dockerfile
+# !*.py

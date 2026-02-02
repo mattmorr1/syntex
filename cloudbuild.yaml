@@ -1,0 +1,59 @@
+# Cloud Build configuration
+# Firebase config must be passed via --substitutions flag at build time:
+# gcloud builds submit --config=cloudbuild.yaml \
+#   --substitutions=_VITE_FIREBASE_API_KEY=xxx,_VITE_FIREBASE_AUTH_DOMAIN=xxx,...
+
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '--build-arg=VITE_FIREBASE_API_KEY=${_VITE_FIREBASE_API_KEY}'
+      - '--build-arg=VITE_FIREBASE_AUTH_DOMAIN=${_VITE_FIREBASE_AUTH_DOMAIN}'
+      - '--build-arg=VITE_FIREBASE_PROJECT_ID=${_VITE_FIREBASE_PROJECT_ID}'
+      - '--build-arg=VITE_FIREBASE_STORAGE_BUCKET=${_VITE_FIREBASE_STORAGE_BUCKET}'
+      - '--build-arg=VITE_FIREBASE_MESSAGING_SENDER_ID=${_VITE_FIREBASE_MESSAGING_SENDER_ID}'
+      - '--build-arg=VITE_FIREBASE_APP_ID=${_VITE_FIREBASE_APP_ID}'
+      - '-t'
+      - 'us-east1-docker.pkg.dev/$PROJECT_ID/uea-app/app:$BUILD_ID'
+      - '-t'
+      - 'us-east1-docker.pkg.dev/$PROJECT_ID/uea-app/app:latest'
+      - '.'
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'us-east1-docker.pkg.dev/$PROJECT_ID/uea-app/app:$BUILD_ID']
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'us-east1-docker.pkg.dev/$PROJECT_ID/uea-app/app:latest']
+
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'uea-app'
+      - '--image=us-east1-docker.pkg.dev/$PROJECT_ID/uea-app/app:$BUILD_ID'
+      - '--region=us-east1'
+      - '--platform=managed'
+      - '--allow-unauthenticated'
+      - '--port=8080'
+      - '--memory=4Gi'
+      - '--cpu=2'
+      - '--timeout=300'
+      - '--update-secrets=/secrets/firebase-key.json=firebase-key:latest'
+
+images:
+  - 'us-east1-docker.pkg.dev/$PROJECT_ID/uea-app/app:$BUILD_ID'
+  - 'us-east1-docker.pkg.dev/$PROJECT_ID/uea-app/app:latest'
+
+# No default substitutions - must be provided at build time
+# This prevents accidentally committing sensitive values
+substitutions:
+  _VITE_FIREBASE_API_KEY: ''
+  _VITE_FIREBASE_AUTH_DOMAIN: ''
+  _VITE_FIREBASE_PROJECT_ID: ''
+  _VITE_FIREBASE_STORAGE_BUCKET: ''
+  _VITE_FIREBASE_MESSAGING_SENDER_ID: ''
+  _VITE_FIREBASE_APP_ID: ''
+
+options:
+  logging: CLOUD_LOGGING_ONLY

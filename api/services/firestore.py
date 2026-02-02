@@ -5,6 +5,18 @@ import firebase_admin
 from firebase_admin import credentials, firestore, auth
 from config import Config
 
+def serialize_timestamps(data: Dict) -> Dict:
+    """Convert Firestore Timestamps to ISO strings for JSON serialization"""
+    result = {}
+    for key, value in data.items():
+        if hasattr(value, 'isoformat'):
+            result[key] = value.isoformat()
+        elif hasattr(value, '_seconds'):  # Firestore Timestamp
+            result[key] = datetime.fromtimestamp(value._seconds).isoformat()
+        else:
+            result[key] = value
+    return result
+
 class FirestoreService:
     _instance = None
     _initialized = False
@@ -15,31 +27,40 @@ class FirestoreService:
         return cls._instance
     
     def __init__(self):
+        # Don't initialize Firebase here - defer to _ensure_initialized()
+        # This allows the server to start immediately
+        pass
+    
+    def _ensure_initialized(self):
+        """Lazy initialization - only runs on first actual use"""
         if FirestoreService._initialized:
             return
-            
+        
         self.db = None
         self.enabled = False
+        self._dev_data = {"users": {}, "projects": {}, "chats": {}, "invites": {}}
         
         try:
-            if os.path.exists(Config.FIREBASE_KEY_PATH):
+            key_path = Config.FIREBASE_KEY_PATH
+            print(f"Checking Firebase key at: {key_path}")
+            if os.path.exists(key_path):
                 if not firebase_admin._apps:
-                    cred = credentials.Certificate(Config.FIREBASE_KEY_PATH)
+                    cred = credentials.Certificate(key_path)
                     firebase_admin.initialize_app(cred)
                 self.db = firestore.client()
                 self.enabled = True
                 print("Firebase initialized successfully")
             else:
-                print(f"Warning: Firebase key not found at {Config.FIREBASE_KEY_PATH}")
+                print(f"Warning: Firebase key not found at {key_path}")
                 print("Running in development mode")
         except Exception as e:
             print(f"Firebase init failed: {e}")
-            
+        
         FirestoreService._initialized = True
-        self._dev_data = {"users": {}, "projects": {}, "chats": {}, "invites": {}}
     
     # User operations
     async def create_user(self, uid: str, email: str, username: str, role: str = "user") -> Dict:
+        self._ensure_initialized()
         user_data = {
             "uid": uid,
             "email": email,
@@ -58,6 +79,7 @@ class FirestoreService:
         return user_data
     
     async def get_user(self, uid: str) -> Optional[Dict]:
+        self._ensure_initialized()
         if self.enabled:
             doc = self.db.collection("users").document(uid).get()
             if doc.exists:
@@ -68,6 +90,7 @@ class FirestoreService:
         return self._dev_data["users"].get(uid)
     
     async def get_user_by_email(self, email: str) -> Optional[Dict]:
+        self._ensure_initialized()
         if self.enabled:
             users = self.db.collection("users").where("email", "==", email).limit(1).stream()
             for user in users:
@@ -81,6 +104,7 @@ class FirestoreService:
         return None
     
     async def update_user_tokens(self, uid: str, flash_tokens: int = 0, pro_tokens: int = 0):
+        self._ensure_initialized()
         if self.enabled:
             user_ref = self.db.collection("users").document(uid)
             user_ref.update({
@@ -97,6 +121,7 @@ class FirestoreService:
                 user["tokens_used"]["total"] += flash_tokens + pro_tokens
     
     async def update_last_accessed(self, uid: str):
+        self._ensure_initialized()
         if self.enabled:
             self.db.collection("users").document(uid).update({
                 "last_accessed": datetime.utcnow()
@@ -105,6 +130,7 @@ class FirestoreService:
             self._dev_data["users"][uid]["last_accessed"] = datetime.utcnow()
     
     async def get_all_users(self) -> List[Dict]:
+        self._ensure_initialized()
         if self.enabled:
             users = []
             for doc in self.db.collection("users").stream():
@@ -115,6 +141,7 @@ class FirestoreService:
         return list(self._dev_data["users"].values())
     
     async def delete_user(self, uid: str):
+        self._ensure_initialized()
         if self.enabled:
             self.db.collection("users").document(uid).delete()
             try:
@@ -125,6 +152,7 @@ class FirestoreService:
             self._dev_data["users"].pop(uid, None)
     
     async def reset_user_tokens(self, uid: str):
+        self._ensure_initialized()
         if self.enabled:
             self.db.collection("users").document(uid).update({
                 "tokens_used": {"total": 0, "flash": 0, "pro": 0}
@@ -135,6 +163,7 @@ class FirestoreService:
     # Project operations
     async def create_project(self, uid: str, name: str, theme: str, files: List[Dict], 
                             main_file: str, custom_theme: str = None) -> Dict:
+        self._ensure_initialized()
         import uuid
         project_id = str(uuid.uuid4())
         project_data = {
@@ -153,32 +182,35 @@ class FirestoreService:
         else:
             self._dev_data["projects"][project_id] = project_data
             
-        return {"id": project_id, **project_data}
+        return {"id": project_id, **serialize_timestamps(project_data)}
     
     async def get_project(self, project_id: str, uid: str) -> Optional[Dict]:
+        self._ensure_initialized()
         if self.enabled:
             doc = self.db.collection("projects").document(project_id).get()
             if doc.exists:
-                data = doc.to_dict()
+                data = serialize_timestamps(doc.to_dict())
                 if data.get("user_id") == uid:
                     return {"id": project_id, **data}
             return None
         project = self._dev_data["projects"].get(project_id)
         if project and project.get("user_id") == uid:
-            return {"id": project_id, **project}
+            return {"id": project_id, **serialize_timestamps(project)}
         return None
     
     async def get_user_projects(self, uid: str) -> List[Dict]:
+        self._ensure_initialized()
         if self.enabled:
             projects = []
             for doc in self.db.collection("projects").where("user_id", "==", uid).stream():
-                data = doc.to_dict()
+                data = serialize_timestamps(doc.to_dict())
                 projects.append({"id": doc.id, **data})
             return projects
-        return [{"id": pid, **p} for pid, p in self._dev_data["projects"].items() 
+        return [{"id": pid, **serialize_timestamps(p)} for pid, p in self._dev_data["projects"].items() 
                 if p.get("user_id") == uid]
     
     async def update_project(self, project_id: str, uid: str, files: List[Dict]) -> bool:
+        self._ensure_initialized()
         project = await self.get_project(project_id, uid)
         if not project:
             return False
@@ -194,6 +226,7 @@ class FirestoreService:
         return True
     
     async def update_project_name(self, project_id: str, uid: str, name: str) -> bool:
+        self._ensure_initialized()
         project = await self.get_project(project_id, uid)
         if not project:
             return False
@@ -209,6 +242,7 @@ class FirestoreService:
         return True
     
     async def delete_project(self, project_id: str, uid: str) -> bool:
+        self._ensure_initialized()
         project = await self.get_project(project_id, uid)
         if not project:
             return False
@@ -220,6 +254,7 @@ class FirestoreService:
         return True
     
     async def duplicate_project(self, project_id: str, uid: str) -> Optional[Dict]:
+        self._ensure_initialized()
         project = await self.get_project(project_id, uid)
         if not project:
             return None
@@ -235,6 +270,7 @@ class FirestoreService:
     
     # Chat operations
     async def save_chat(self, uid: str, project_id: str, messages: List[Dict]) -> str:
+        self._ensure_initialized()
         import uuid
         chat_id = str(uuid.uuid4())
         chat_data = {
@@ -252,6 +288,7 @@ class FirestoreService:
         return chat_id
     
     async def get_chat_history(self, uid: str, project_id: str) -> List[Dict]:
+        self._ensure_initialized()
         if self.enabled:
             chats = []
             query = self.db.collection("chats").where("uid", "==", uid)
@@ -267,6 +304,7 @@ class FirestoreService:
     
     # Stats
     async def get_stats(self) -> Dict:
+        self._ensure_initialized()
         if self.enabled:
             users = list(self.db.collection("users").stream())
             projects = list(self.db.collection("projects").stream())
@@ -300,6 +338,7 @@ class FirestoreService:
     
     # Feedback
     async def save_feedback(self, feedback: str, uid: str = None):
+        self._ensure_initialized()
         import uuid
         feedback_id = str(uuid.uuid4())
         feedback_data = {
@@ -315,6 +354,7 @@ class FirestoreService:
     
     # Invite codes
     async def create_invite(self, created_by: str, uses: int = 1) -> Dict:
+        self._ensure_initialized()
         import uuid
         import secrets
         code = secrets.token_urlsafe(8)[:12].upper()
@@ -336,6 +376,7 @@ class FirestoreService:
         return invite_data
     
     async def validate_invite(self, code: str) -> Optional[Dict]:
+        self._ensure_initialized()
         code = code.strip().upper()
         if self.enabled:
             doc = self.db.collection("invites").document(code).get()
@@ -351,6 +392,7 @@ class FirestoreService:
         return None
     
     async def use_invite(self, code: str, used_by_uid: str) -> bool:
+        self._ensure_initialized()
         code = code.strip().upper()
         if self.enabled:
             doc_ref = self.db.collection("invites").document(code)
@@ -373,6 +415,7 @@ class FirestoreService:
         return False
     
     async def get_all_invites(self) -> List[Dict]:
+        self._ensure_initialized()
         if self.enabled:
             invites = []
             for doc in self.db.collection("invites").order_by("created_at", direction=firestore.Query.DESCENDING).stream():
@@ -383,6 +426,7 @@ class FirestoreService:
         return list(self._dev_data["invites"].values())
     
     async def deactivate_invite(self, code: str) -> bool:
+        self._ensure_initialized()
         code = code.strip().upper()
         if self.enabled:
             doc_ref = self.db.collection("invites").document(code)

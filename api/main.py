@@ -4,13 +4,22 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from datetime import datetime
 import os
+import sys
+
+# Log startup for debugging
+print(f"Starting UEA App...")
+print(f"Python path: {sys.path}")
+print(f"Working directory: {os.getcwd()}")
+print(f"PORT env: {os.environ.get('PORT', 'not set')}")
 
 from api.routers import auth, projects, compile, ai, admin
 from api.routers.projects import upload_router, feedback_router
 
+print("Routers imported successfully")
+
 app = FastAPI(
-    title="UEA AI LaTeX Editor",
-    description="AI-powered LaTeX document editor with Gemini integration",
+    title="AI LaTeX Editor",
+    description="AI-powered LaTeX document editor",
     version="2.0.0"
 )
 
@@ -34,8 +43,20 @@ app.include_router(admin.router)
 
 # Serve React frontend in production
 frontend_dist = os.path.join(os.path.dirname(__file__), "..", "static", "dist")
+print(f"Frontend dist path: {frontend_dist}")
+print(f"Frontend exists: {os.path.exists(frontend_dist)}")
+
 if os.path.exists(frontend_dist):
-    app.mount("/assets", StaticFiles(directory=os.path.join(frontend_dist, "assets")), name="assets")
+    assets_path = os.path.join(frontend_dist, "assets")
+    if os.path.exists(assets_path):
+        app.mount("/assets", StaticFiles(directory=assets_path), name="assets")
+        print("Assets mounted successfully")
+    else:
+        print(f"Warning: Assets directory not found at {assets_path}")
+
+@app.on_event("startup")
+async def startup_event():
+    print(f"App started successfully on port {os.environ.get('PORT', '8080')}")
 
 @app.get("/health")
 async def health_check():

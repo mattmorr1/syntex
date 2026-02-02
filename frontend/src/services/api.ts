@@ -54,9 +54,27 @@ export const api = {
     }),
 
   // Projects
-  getProjects: () => request<any[]>('/projects'),
+  getProjects: async () => {
+    const projects = await request<any[]>('/projects');
+    return projects.map(p => ({
+      ...p,
+      createdAt: p.created_at || p.createdAt,
+      updatedAt: p.updated_at || p.updatedAt,
+      mainFile: p.main_file || p.mainFile,
+      customTheme: p.custom_theme || p.customTheme,
+    }));
+  },
   
-  getProject: (id: string) => request<any>(`/projects/${id}`),
+  getProject: async (id: string) => {
+    const p = await request<any>(`/projects/${id}`);
+    return {
+      ...p,
+      createdAt: p.created_at || p.createdAt,
+      updatedAt: p.updated_at || p.updatedAt,
+      mainFile: p.main_file || p.mainFile,
+      customTheme: p.custom_theme || p.customTheme,
+    };
+  },
   
   createProject: (data: { name: string; theme: string; customTheme?: string }) =>
     request<any>('/projects', { method: 'POST', body: JSON.stringify(data) }),

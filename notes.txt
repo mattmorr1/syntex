@@ -1,0 +1,16 @@
+- abstracting layer for ai agent (langchain?)
+- worried about prompting (rate limiting, prompt cap, config in admin?)
+- how to efficiently do autofill without wasting tokens?
+- api interchanging?
+- billing?
+- make ux more usable?
+- how does admin have control over backend? -> no home button back, have to use url
+- more efficient way to create accounts?
+- sso
+- organizations?
+- add your own prompt/template (cls, other) for ai upload
+
+build: 
+gcloud builds submit --tag us-east1-docker.pkg.dev/uea-app-470816/uea-app/app:latest --region=us-east1 .
+deploy: 
+gcloud run deploy uea-app --image=us-east1-docker.pkg.dev/uea-app-470816/uea-app/app:latest --region=us-east1 --platform=managed --allow-unauthenticated --memory=4Gi --cpu=2 --timeout=300 --port=8080 --env-vars-file=env.yaml --update-secrets=/app/firebase-key.json=firebase-key:latest

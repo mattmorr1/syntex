@@ -40,7 +40,7 @@ import {
 } from '@mui/icons-material';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { useThemeStore } from '../../store/themeStore';
-import { useEditorStore, ProjectFile } from '../../store/editorStore';
+import { useEditorStore } from '../../store/editorStore';
 import { api } from '../../services/api';
 import { MonacoEditor } from './MonacoEditor';
 import { AgentPanel } from '../ai/AgentPanel';
@@ -118,7 +118,7 @@ export function Editor() {
       setTitleValue(project.name);
     } catch (err: any) {
       setSnackbar({ open: true, message: err.message, severity: 'error' });
-      navigate('/history');
+      navigate('/');
     } finally {
       setLoading(false);
     }
@@ -206,7 +206,7 @@ export function Editor() {
     }
   };
 
-  const activeFileContent = currentProject?.files.find(f => f.name === activeFile)?.content || '';
+  const activeFileContent = currentProject?.files.find((f: { name: string }) => f.name === activeFile)?.content || '';
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -256,13 +256,13 @@ export function Editor() {
             <Typography variant="caption" color="text.secondary" fontWeight={500} letterSpacing={0.5}>
               FILES
             </Typography>
-            <IconButton size="small" onClick={(e) => setAddMenuAnchor(e.currentTarget)} sx={{ p: 0.25 }}>
+            <IconButton size="small" onClick={(e: React.MouseEvent<HTMLButtonElement>) => setAddMenuAnchor(e.currentTarget)} sx={{ p: 0.25 }}>
               <Add sx={{ fontSize: 16 }} />
             </IconButton>
           </Box>
           
           <List dense sx={{ flex: 1, overflow: 'auto', py: 0.5 }}>
-            {currentProject?.files.map((file) => (
+            {currentProject?.files.map((file: { name: string; type: string }) => (
               <ListItem key={file.name} disablePadding sx={{ px: 0.5 }}>
                 <ListItemButton
                   selected={activeFile === file.name}
@@ -327,7 +327,7 @@ export function Editor() {
               <TextField
                 inputRef={titleInputRef}
                 value={titleValue}
-                onChange={(e) => setTitleValue(e.target.value)}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTitleValue(e.target.value)}
                 onBlur={handleTitleSave}
                 onKeyDown={handleTitleKeyDown}
                 size="small"
@@ -384,7 +384,7 @@ export function Editor() {
             <Tooltip title="Download PDF">
               <IconButton 
                 size="small"
-                onClick={() => window.open(`/api/download-pdf/${projectId}`)}
+                onClick={() => window.open(`/download-pdf/${projectId}`)}
                 disabled={!pdfUrl}
                 sx={{ p: 0.5 }}
               >
@@ -395,13 +395,13 @@ export function Editor() {
             <Box sx={{ width: 1, height: 16, bgcolor: borderColor, mx: 0.5 }} />
             
             <Tooltip title="Zoom Out">
-              <IconButton size="small" onClick={() => setZoom(z => Math.max(50, z - 10))} sx={{ p: 0.5 }}>
+              <IconButton size="small" onClick={() => setZoom((z: number) => Math.max(50, z - 10))} sx={{ p: 0.5 }}>
                 <ZoomOut sx={{ fontSize: 16 }} />
               </IconButton>
             </Tooltip>
             <Typography variant="caption" sx={{ fontSize: 11, minWidth: 32, textAlign: 'center' }}>{zoom}%</Typography>
             <Tooltip title="Zoom In">
-              <IconButton size="small" onClick={() => setZoom(z => Math.min(200, z + 10))} sx={{ p: 0.5 }}>
+              <IconButton size="small" onClick={() => setZoom((z: number) => Math.min(200, z + 10))} sx={{ p: 0.5 }}>
                 <ZoomIn sx={{ fontSize: 16 }} />
               </IconButton>
             </Tooltip>
@@ -507,7 +507,7 @@ export function Editor() {
       <Snackbar
         open={snackbar.open}
         autoHideDuration={2000}
-        onClose={() => setSnackbar(s => ({ ...s, open: false }))}
+        onClose={() => setSnackbar((s: { open: boolean; message: string; severity: 'success' | 'error' }) => ({ ...s, open: false }))}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
       >
         <Alert severity={snackbar.severity} sx={{ fontSize: 12 }}>{snackbar.message}</Alert>

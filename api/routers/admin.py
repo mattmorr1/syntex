@@ -1,3 +1,4 @@
+import os
 from fastapi import APIRouter, HTTPException, Depends
 from typing import List
 
@@ -6,6 +7,25 @@ from api.services.firestore import db_service
 from api.routers.auth import get_admin_user
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
+
+# Bootstrap secret for creating initial invite (set via env var)
+BOOTSTRAP_SECRET = os.getenv("BOOTSTRAP_SECRET", "")
+
+@router.post("/bootstrap-invite")
+async def bootstrap_invite(request: dict):
+    """Create initial invite code. Only works once when no invites exist."""
+    # Check if any invites already exist - if so, disable this endpoint
+    existing = await db_service.get_all_invites()
+    if existing:
+        raise HTTPException(status_code=403, detail="Bootstrap disabled - invites already exist")
+    
+    secret = request.get("secret")
+    if not BOOTSTRAP_SECRET or secret != BOOTSTRAP_SECRET:
+        raise HTTPException(status_code=403, detail="Invalid bootstrap secret")
+    
+    uses = request.get("uses", 5)
+    invite = await db_service.create_invite("bootstrap", uses)
+    return {"code": invite["code"], "uses": uses}
 
 @router.get("/users")
 async def get_all_users(admin: dict = Depends(get_admin_user)):

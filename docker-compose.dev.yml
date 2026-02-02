@@ -11,8 +11,8 @@ services:
       - DEBUG=True
       - FIREBASE_KEY_PATH=firebase-key.json
       - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - GEMINI_FLASH_MODEL=gemini-2.0-flash
-      - GEMINI_PRO_MODEL=gemini-1.5-pro
+      - GEMINI_FLASH_MODEL=gemini-3-flash-preview
+      - GEMINI_PRO_MODEL=gemini-3-pro-preview
       - LATEX_COMPILER=pdflatex
       - LATEX_TIMEOUT=60
       - ADMIN_EMAIL=mmorristwo@gmail.com
