@@ -53,33 +53,42 @@ async def chat(request: ChatRequest, user: dict = Depends(get_current_user)):
 
 @router.post("/agent-edit", response_model=AgentEditResponse)
 async def agent_edit(request: AgentEditRequest, user: dict = Depends(get_current_user)):
-    result, tokens = await gemini_service.agent_edit(
-        request.document,
-        request.instruction,
-        request.model or "pro"
-    )
-    
-    # Update tokens
-    if request.model == "flash":
-        await db_service.update_user_tokens(user["uid"], flash_tokens=tokens)
-    else:
-        await db_service.update_user_tokens(user["uid"], pro_tokens=tokens)
-    
-    changes = [
-        DiffChange(
-            start_line=c.get("start_line", 0),
-            end_line=c.get("end_line", 0),
-            original=c.get("original", ""),
-            replacement=c.get("replacement", ""),
-            reason=c.get("reason", "")
-        ) for c in result.get("changes", [])
-    ]
-    
-    return AgentEditResponse(
-        explanation=result.get("explanation", ""),
-        changes=changes,
-        tokens=tokens
-    )
+    try:
+        result, tokens = await gemini_service.agent_edit(
+            request.document,
+            request.instruction,
+            request.model or "pro"
+        )
+        
+        # Update tokens
+        if request.model == "flash":
+            await db_service.update_user_tokens(user["uid"], flash_tokens=tokens)
+        else:
+            await db_service.update_user_tokens(user["uid"], pro_tokens=tokens)
+        
+        changes = [
+            DiffChange(
+                start_line=c.get("start_line", 0),
+                end_line=c.get("end_line", 0),
+                original=c.get("original", ""),
+                replacement=c.get("replacement", ""),
+                reason=c.get("reason", "")
+            ) for c in result.get("changes", [])
+        ]
+        
+        return AgentEditResponse(
+            explanation=result.get("explanation", ""),
+            changes=changes,
+            tokens=tokens
+        )
+    except Exception as e:
+        error_msg = str(e)
+        # Return a user-friendly error response
+        return AgentEditResponse(
+            explanation=f"Error: {error_msg}",
+            changes=[],
+            tokens=0
+        )
 
 @router.get("/chat-history")
 async def get_chat_history(

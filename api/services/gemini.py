@@ -42,10 +42,24 @@ class GeminiService:
             result = response.json()
             
             try:
-                text = result["candidates"][0]["content"]["parts"][0]["text"]
+                candidate = result["candidates"][0]
+                finish_reason = candidate.get("finishReason", "")
                 tokens = result.get("usageMetadata", {}).get("totalTokenCount", 0)
+                
+                # Handle MAX_TOKENS or empty content
+                if finish_reason == "MAX_TOKENS":
+                    raise Exception(f"Response exceeded token limit. Try using a shorter document or simpler instruction. Used {tokens} tokens.")
+                
+                # Check if content exists and has parts
+                content = candidate.get("content", {})
+                parts = content.get("parts", [])
+                
+                if not parts or not parts[0].get("text"):
+                    raise Exception(f"Empty response from API. Finish reason: {finish_reason}")
+                
+                text = parts[0]["text"]
                 return text, tokens
-            except (KeyError, IndexError):
+            except (KeyError, IndexError) as e:
                 raise Exception(f"Failed to parse response: {result}")
     
     def _dev_response(self, prompt: str) -> str:
@@ -147,10 +161,18 @@ Provide helpful, concise assistance. If suggesting code changes, show the LaTeX 
                         model: str = "pro") -> Tuple[Dict[str, Any], int]:
         model_name = FLASH_MODEL if model == "flash" else PRO_MODEL
         
+        # Truncate document if too long to prevent token limit issues
+        max_doc_length = 15000  # characters
+        truncated = False
+        if len(document) > max_doc_length:
+            document = document[:max_doc_length]
+            truncated = True
+        
         prompt = f"""You are an AI agent that edits LaTeX documents.
 
 Document:
 {document}
+{"[Document truncated due to length]" if truncated else ""}
 
 User instruction: {instruction}
 
@@ -168,26 +190,38 @@ Analyze the document and provide specific changes. Return a JSON object with:
   ]
 }}
 
-Return ONLY valid JSON, no markdown formatting."""
+Return ONLY valid JSON, no markdown formatting. Keep your response concise."""
 
-        text, tokens = await self._call_api(model_name, prompt, temperature=0.2, max_tokens=2048)
+        text, tokens = await self._call_api(model_name, prompt, temperature=0.2, max_tokens=4096)
         
         # Parse JSON from response
         try:
             # Clean potential markdown code blocks
             clean_text = text.strip()
             if clean_text.startswith("```"):
-                clean_text = clean_text.split("```")[1]
-                if clean_text.startswith("json"):
-                    clean_text = clean_text[4:]
+                parts = clean_text.split("```")
+                if len(parts) >= 2:
+                    clean_text = parts[1]
+                    if clean_text.startswith("json"):
+                        clean_text = clean_text[4:].strip()
             
             result = json.loads(clean_text)
+            
+            # Validate response structure
+            if not isinstance(result, dict):
+                raise ValueError("Response is not a JSON object")
+            if "explanation" not in result:
+                result["explanation"] = "AI suggested changes"
+            if "changes" not in result:
+                result["changes"] = []
+            
             return result, tokens
-        except json.JSONDecodeError:
-            # Fallback response
+        except (json.JSONDecodeError, ValueError) as e:
+            # Fallback response with more info
             return {
-                "explanation": "Could not parse AI response",
-                "changes": []
+                "explanation": f"Could not parse AI response: {str(e)[:100]}",
+                "changes": [],
+                "raw_response": text[:500] if text else "No response"
             }, tokens
     
     async def improve_content(self, content: str) -> Tuple[str, int]:
