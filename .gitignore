@@ -3,11 +3,11 @@
 .env.local
 .env.production
 env.yaml
-
+.claude
 # Firebase configuration
 firebase-key.json
 firebase-key-*.json
-
+cloudbuild.yaml
 # Google Cloud credentials
 *.json
 !package.json

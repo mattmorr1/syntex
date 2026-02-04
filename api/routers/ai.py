@@ -1,5 +1,7 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from typing import Optional
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from api.models.schemas import (
     AutocompleteRequest, AutocompleteResponse,
@@ -10,14 +12,24 @@ from api.services.firestore import db_service
 from api.services.gemini import gemini_service
 from api.routers.auth import get_current_user
 
+# Rate limiter - 60 requests per minute for AI endpoints
+limiter = Limiter(key_func=get_remote_address)
 router = APIRouter(prefix="/ai", tags=["AI"])
 
+async def get_user_api_key(user: dict) -> Optional[str]:
+    """Get user's custom API key if set."""
+    settings = await db_service.get_user_settings(user["uid"])
+    return settings.get("gemini_api_key")
+
 @router.post("/autocomplete", response_model=AutocompleteResponse)
-async def autocomplete(request: AutocompleteRequest, user: dict = Depends(get_current_user)):
+@limiter.limit("120/minute")
+async def autocomplete(request: Request, body: AutocompleteRequest, user: dict = Depends(get_current_user)):
+    api_key = await get_user_api_key(user)
     suggestion, tokens = await gemini_service.autocomplete(
-        request.context,
-        request.cursor_position,
-        request.file_name
+        body.context,
+        body.cursor_position,
+        body.file_name,
+        api_key=api_key
     )
     
     # Update user token count (flash model)
@@ -26,15 +38,18 @@ async def autocomplete(request: AutocompleteRequest, user: dict = Depends(get_cu
     return AutocompleteResponse(suggestion=suggestion, tokens=tokens)
 
 @router.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest, user: dict = Depends(get_current_user)):
+@limiter.limit("30/minute")
+async def chat(request: Request, body: ChatRequest, user: dict = Depends(get_current_user)):
+    api_key = await get_user_api_key(user)
     response_text, tokens = await gemini_service.chat(
-        request.message,
-        request.context,
-        request.model or "flash"
+        body.message,
+        body.context,
+        body.model or "flash",
+        api_key=api_key
     )
     
     # Update tokens based on model
-    if request.model == "pro":
+    if body.model == "pro":
         await db_service.update_user_tokens(user["uid"], pro_tokens=tokens)
     else:
         await db_service.update_user_tokens(user["uid"], flash_tokens=tokens)
@@ -42,9 +57,9 @@ async def chat(request: ChatRequest, user: dict = Depends(get_current_user)):
     # Save chat history
     await db_service.save_chat(
         uid=user["uid"],
-        project_id=request.project_id,
+        project_id=body.project_id,
         messages=[
-            {"role": "user", "content": request.message, "tokens": 0},
+            {"role": "user", "content": body.message, "tokens": 0},
             {"role": "assistant", "content": response_text, "tokens": tokens}
         ]
     )
@@ -52,15 +67,19 @@ async def chat(request: ChatRequest, user: dict = Depends(get_current_user)):
     return ChatResponse(response=response_text, tokens=tokens)
 
 @router.post("/agent-edit", response_model=AgentEditResponse)
-async def agent_edit(request: AgentEditRequest, user: dict = Depends(get_current_user)):
+@limiter.limit("20/minute")
+async def agent_edit(request: Request, body: AgentEditRequest, user: dict = Depends(get_current_user)):
+    api_key = await get_user_api_key(user)
     result, tokens = await gemini_service.agent_edit(
-        request.document,
-        request.instruction,
-        request.model or "pro"
+        body.document,
+        body.instruction,
+        body.model or "pro",
+        api_key=api_key,
+        images=body.images
     )
     
     # Update tokens
-    if request.model == "flash":
+    if body.model == "flash":
         await db_service.update_user_tokens(user["uid"], flash_tokens=tokens)
     else:
         await db_service.update_user_tokens(user["uid"], pro_tokens=tokens)

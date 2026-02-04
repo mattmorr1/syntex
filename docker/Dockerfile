@@ -47,11 +47,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # Copy requirements and install Python dependencies
-COPY requirements.txt .
+COPY config/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY config.py .
+COPY config/config.py ./config/config.py
+COPY config/__init__.py ./config/__init__.py
 COPY main.py .
 COPY cli.py .
 COPY api/ ./api/
@@ -69,8 +70,8 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONPATH=/app
 
 # Default port (Cloud Run overrides via PORT env var)
-ENV PORT=8000
-EXPOSE 8000
+ENV PORT=8080
+EXPOSE 8080
 
 # Run the application (shell form to expand $PORT)
 CMD uvicorn api.main:app --host 0.0.0.0 --port $PORT

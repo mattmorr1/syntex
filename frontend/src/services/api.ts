@@ -99,7 +99,7 @@ export const api = {
       body: JSON.stringify({ project_id: projectId, message, context, model }),
     }),
 
-  agentEdit: (projectId: string, instruction: string, document: string, model?: string) =>
+  agentEdit: (projectId: string, instruction: string, document: string, model?: string, images?: string[]) =>
     request<{
       explanation: string;
       changes: Array<{
@@ -112,7 +112,7 @@ export const api = {
       tokens: number;
     }>('/ai/agent-edit', {
       method: 'POST',
-      body: JSON.stringify({ project_id: projectId, instruction, document, model }),
+      body: JSON.stringify({ project_id: projectId, instruction, document, model, images }),
     }),
 
   getChatHistory: (projectId: string) =>
@@ -138,13 +138,36 @@ export const api = {
   deactivateInvite: (code: string) =>
     request<void>(`/admin/invites/${code}`, { method: 'DELETE' }),
 
+  // Settings
+  getSettings: () => request<{ settings: any }>('/auth/settings'),
+  
+  updateSettings: (settings: any) =>
+    request<{ message: string }>('/auth/settings', {
+      method: 'POST',
+      body: JSON.stringify({ settings }),
+    }),
+
   // Upload
-  uploadFile: async (file: File, theme: string, customTheme?: string) => {
+  uploadFile: async (
+    file: File, 
+    theme: string, 
+    customTheme?: string,
+    options?: {
+      customPrompt?: string;
+      customCls?: string;
+      customPreamble?: string;
+      images?: string[];
+    }
+  ) => {
     const token = useAuthStore.getState().token;
     const formData = new FormData();
     formData.append('file', file);
     formData.append('theme', theme);
     if (customTheme) formData.append('custom_theme', customTheme);
+    if (options?.customPrompt) formData.append('custom_prompt', options.customPrompt);
+    if (options?.customCls) formData.append('custom_cls', options.customCls);
+    if (options?.customPreamble) formData.append('custom_preamble', options.customPreamble);
+    if (options?.images) formData.append('images', JSON.stringify(options.images));
 
     const response = await fetch(`${API_BASE}/upload`, {
       method: 'POST',

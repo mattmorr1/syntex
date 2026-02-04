@@ -7,36 +7,36 @@ from config import Config
 
 class FirestoreService:
     _instance = None
-    _initialized = False
     
     def __new__(cls):
         if cls._instance is None:
-            cls._instance = super().__new__(cls)
+            instance = super().__new__(cls)
+            instance.db = None
+            instance.enabled = False
+            instance._dev_data = {"users": {}, "projects": {}, "chats": {}, "invites": {}}
+            instance._initialize()
+            cls._instance = instance
         return cls._instance
     
-    def __init__(self):
-        if FirestoreService._initialized:
-            return
-            
-        self.db = None
-        self.enabled = False
-        
+    def _initialize(self):
         try:
-            if os.path.exists(Config.FIREBASE_KEY_PATH):
+            key_path = Config.FIREBASE_KEY_PATH
+            print(f"Looking for Firebase key at: {key_path}", flush=True)
+            if os.path.exists(key_path):
                 if not firebase_admin._apps:
-                    cred = credentials.Certificate(Config.FIREBASE_KEY_PATH)
+                    cred = credentials.Certificate(key_path)
                     firebase_admin.initialize_app(cred)
                 self.db = firestore.client()
                 self.enabled = True
-                print("Firebase initialized successfully")
+                print("Firebase initialized successfully", flush=True)
             else:
-                print(f"Warning: Firebase key not found at {Config.FIREBASE_KEY_PATH}")
-                print("Running in development mode")
+                print(f"Warning: Firebase key not found at {key_path}", flush=True)
+                print("Running in development mode", flush=True)
         except Exception as e:
-            print(f"Firebase init failed: {e}")
-            
-        FirestoreService._initialized = True
-        self._dev_data = {"users": {}, "projects": {}, "chats": {}, "invites": {}}
+            print(f"Firebase init failed: {e}", flush=True)
+    
+    def __init__(self):
+        pass  # All init done in __new__
     
     # User operations
     async def create_user(self, uid: str, email: str, username: str, role: str = "user") -> Dict:
@@ -103,6 +103,26 @@ class FirestoreService:
             })
         elif uid in self._dev_data["users"]:
             self._dev_data["users"][uid]["last_accessed"] = datetime.utcnow()
+    
+    async def update_user_settings(self, uid: str, settings: Dict) -> bool:
+        """Update user settings like custom API key."""
+        if self.enabled:
+            self.db.collection("users").document(uid).update({
+                "settings": settings,
+                "last_accessed": datetime.utcnow()
+            })
+            return True
+        elif uid in self._dev_data["users"]:
+            self._dev_data["users"][uid]["settings"] = settings
+            return True
+        return False
+    
+    async def get_user_settings(self, uid: str) -> Dict:
+        """Get user settings."""
+        user = await self.get_user(uid)
+        if user:
+            return user.get("settings", {})
+        return {}
     
     async def get_all_users(self) -> List[Dict]:
         if self.enabled:

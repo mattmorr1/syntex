@@ -142,11 +142,21 @@ async def register(request: RegisterRequest):
     try:
         role = "admin" if request.email == ADMIN_EMAIL else "user"
         
-        user_record = auth.create_user(
-            email=request.email,
-            password=request.password,
-            display_name=request.username
-        )
+        # Try to get existing user (frontend may have already created via client SDK)
+        try:
+            user_record = auth.get_user_by_email(request.email)
+        except auth.UserNotFoundError:
+            # User doesn't exist, create them
+            user_record = auth.create_user(
+                email=request.email,
+                password=request.password,
+                display_name=request.username
+            )
+        
+        # Check if Firestore doc exists
+        existing_user = await db_service.get_user(user_record.uid)
+        if existing_user:
+            raise HTTPException(status_code=400, detail="Email already registered")
         
         user = await db_service.create_user(
             uid=user_record.uid,
@@ -171,8 +181,8 @@ async def register(request: RegisterRequest):
                 tokensUsed=TokenUsage()
             )
         )
-    except auth.EmailAlreadyExistsError:
-        raise HTTPException(status_code=400, detail="Email already registered")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -255,3 +265,29 @@ async def get_me(user: dict = Depends(get_current_user)):
         role=user.get("role", "user"),
         tokensUsed=TokenUsage(**user.get("tokens_used", {"total": 0, "flash": 0, "pro": 0}))
     )
+
+@router.get("/settings")
+async def get_settings(user: dict = Depends(get_current_user)):
+    settings = await db_service.get_user_settings(user["uid"])
+    # Mask API key for security (only show last 4 chars)
+    if settings.get("gemini_api_key"):
+        key = settings["gemini_api_key"]
+        settings["gemini_api_key_masked"] = f"...{key[-4:]}" if len(key) > 4 else "****"
+        del settings["gemini_api_key"]
+    return {"settings": settings}
+
+@router.post("/settings")
+async def update_settings(request: dict, user: dict = Depends(get_current_user)):
+    settings = request.get("settings", {})
+    # Only allow specific settings to be updated
+    allowed_keys = ["gemini_api_key"]
+    filtered_settings = {k: v for k, v in settings.items() if k in allowed_keys}
+    
+    if not filtered_settings:
+        raise HTTPException(status_code=400, detail="No valid settings provided")
+    
+    success = await db_service.update_user_settings(user["uid"], filtered_settings)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to update settings")
+    
+    return {"message": "Settings updated"}

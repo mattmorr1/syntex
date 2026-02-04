@@ -1,11 +1,22 @@
 from fastapi import APIRouter, HTTPException, Depends
 from typing import List
+from datetime import datetime
 
 from api.models.schemas import UserResponse, TokenUsage, AdminStats
 from api.services.firestore import db_service
 from api.routers.auth import get_admin_user
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
+
+def serialize_datetime(dt) -> str | None:
+    """Convert Firestore datetime to ISO string."""
+    if dt is None:
+        return None
+    if isinstance(dt, datetime):
+        return dt.isoformat()
+    if hasattr(dt, 'isoformat'):
+        return dt.isoformat()
+    return str(dt)
 
 @router.get("/users")
 async def get_all_users(admin: dict = Depends(get_admin_user)):
@@ -17,8 +28,8 @@ async def get_all_users(admin: dict = Depends(get_admin_user)):
             "username": u.get("username", ""),
             "email": u.get("email", ""),
             "role": u.get("role", "user"),
-            "createdAt": u.get("created_at"),
-            "lastAccessed": u.get("last_accessed"),
+            "createdAt": serialize_datetime(u.get("created_at")),
+            "lastAccessed": serialize_datetime(u.get("last_accessed")),
             "tokensUsed": u.get("tokens_used", {"total": 0, "flash": 0, "pro": 0})
         }
         for u in users
@@ -57,7 +68,14 @@ async def delete_user(uid: str, admin: dict = Depends(get_admin_user)):
 @router.get("/invites")
 async def get_invites(admin: dict = Depends(get_admin_user)):
     invites = await db_service.get_all_invites()
-    return invites
+    # Serialize datetime fields
+    return [
+        {
+            **inv,
+            "created_at": serialize_datetime(inv.get("created_at"))
+        }
+        for inv in invites
+    ]
 
 @router.post("/invites")
 async def create_invite(request: dict, admin: dict = Depends(get_admin_user)):

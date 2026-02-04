@@ -112,6 +112,7 @@ class AgentEditRequest(BaseModel):
     instruction: str
     document: str
     model: Optional[Literal["flash", "pro"]] = "pro"
+    images: Optional[List[str]] = None  # Base64 encoded images
 
 class DiffChange(BaseModel):
     start_line: int

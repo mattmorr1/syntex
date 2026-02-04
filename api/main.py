@@ -1,9 +1,14 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
+from slowapi.errors import RateLimitExceeded
 from datetime import datetime
 import os
+import sys
+
+print(f"Starting UEA API... Python {sys.version}", flush=True)
+print(f"PORT={os.getenv('PORT', 'not set')}", flush=True)
 
 from api.routers import auth, projects, compile, ai, admin
 from api.routers.projects import upload_router, feedback_router
@@ -13,6 +18,16 @@ app = FastAPI(
     description="AI-powered LaTeX document editor with Gemini integration",
     version="2.0.0"
 )
+
+# Rate limiting
+app.state.limiter = ai.limiter
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "Rate limit exceeded. Please slow down."}
+    )
 
 # CORS
 app.add_middleware(
@@ -36,6 +51,10 @@ app.include_router(admin.router)
 frontend_dist = os.path.join(os.path.dirname(__file__), "..", "static", "dist")
 if os.path.exists(frontend_dist):
     app.mount("/assets", StaticFiles(directory=os.path.join(frontend_dist, "assets")), name="assets")
+
+@app.on_event("startup")
+async def startup_event():
+    print("UEA API started successfully!", flush=True)
 
 @app.get("/health")
 async def health_check():

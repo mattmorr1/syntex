@@ -19,6 +19,8 @@ export function MonacoEditor({ value, onChange, fileName, projectId }: MonacoEdi
   const [ghostPosition, setGhostPosition] = useState<{ lineNumber: number; column: number } | null>(null);
   const decorationsRef = useRef<string[]>([]);
   const autocompleteTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const lastRequestIdRef = useRef(0);
 
   const handleEditorMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
@@ -66,9 +68,14 @@ export function MonacoEditor({ value, onChange, fileName, projectId }: MonacoEdi
       clearTimeout(autocompleteTimeoutRef.current);
     }
     
+    // Cancel any in-flight request
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    
     autocompleteTimeoutRef.current = setTimeout(async () => {
       await fetchAutocomplete();
-    }, 500); // 500ms debounce
+    }, 800); // 800ms debounce for better batching
   }, []);
 
   const fetchAutocomplete = async () => {
@@ -80,20 +87,35 @@ export function MonacoEditor({ value, onChange, fileName, projectId }: MonacoEdi
     
     if (!position || !model) return;
     
-    // Get context (text before cursor)
-    const textUntilPosition = model.getValueInRange({
-      startLineNumber: 1,
-      startColumn: 1,
-      endLineNumber: position.lineNumber,
-      endColumn: position.column,
-    });
-    
-    // Skip if line is empty or just whitespace
     const currentLine = model.getLineContent(position.lineNumber);
+    
+    // Skip autocomplete in these cases:
+    // 1. Empty line
+    // 2. Inside a comment
+    // 3. Line too short (less than 3 chars)
+    // 4. Just finished typing a closing brace
     if (!currentLine.trim()) return;
+    if (currentLine.trim().startsWith('%')) return;
+    if (currentLine.trim().length < 3) return;
+    if (currentLine.endsWith('}') || currentLine.endsWith(']')) return;
+    
+    // Get context - only last 500 chars to reduce tokens
+    const fullText = model.getValue();
+    const offset = model.getOffsetAt(position);
+    const contextStart = Math.max(0, offset - 500);
+    const textUntilPosition = fullText.substring(contextStart, offset);
+    
+    // Track request ID to ignore stale responses
+    const requestId = ++lastRequestIdRef.current;
+    
+    // Create abort controller for this request
+    abortControllerRef.current = new AbortController();
     
     try {
       const result = await api.autocomplete(textUntilPosition, textUntilPosition.length, fileName);
+      
+      // Ignore if a newer request was made
+      if (requestId !== lastRequestIdRef.current) return;
       
       if (result.suggestion && result.suggestion.trim()) {
         showGhostText(result.suggestion, position);
@@ -284,7 +306,7 @@ function getLanguageFromFileName(fileName: string): string {
 function registerLaTeXLanguage(monaco: Monaco) {
   // Check if already registered
   const languages = monaco.languages.getLanguages();
-  if (languages.some(l => l.id === 'latex')) return;
+  if (languages.some((l: any) => l.id === 'latex')) return;
   
   monaco.languages.register({ id: 'latex' });
   
@@ -312,7 +334,7 @@ function registerLaTeXLanguage(monaco: Monaco) {
   
   // LaTeX snippets
   monaco.languages.registerCompletionItemProvider('latex', {
-    provideCompletionItems: (model, position) => {
+    provideCompletionItems: (model: any, position: any) => {
       const word = model.getWordUntilPosition(position);
       const range = {
         startLineNumber: position.lineNumber,

@@ -13,6 +13,15 @@ import {
   MenuItem,
   Skeleton,
   Tooltip,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  FormControl,
+  InputLabel,
+  Select,
+  Tabs,
+  Tab,
 } from '@mui/material';
 import {
   Add,
@@ -30,6 +39,8 @@ import {
   ContentCopy,
   Delete,
   Download,
+  Settings,
+  Image as ImageIcon,
 } from '@mui/icons-material';
 import { api } from '../services/api';
 import { useThemeStore } from '../store/themeStore';
@@ -52,6 +63,15 @@ export function Home() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [error, setError] = useState('');
   const [dragActive, setDragActive] = useState(false);
+  
+  // Upload customization
+  const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
+  const [uploadTab, setUploadTab] = useState(0);
+  const [uploadTheme, setUploadTheme] = useState('report');
+  const [customPrompt, setCustomPrompt] = useState('');
+  const [customCls, setCustomCls] = useState('');
+  const [customPreamble, setCustomPreamble] = useState('');
+  const [referenceImages, setReferenceImages] = useState<{ file: File; preview: string }[]>([]);
   
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
@@ -95,6 +115,7 @@ export function Home() {
     if (droppedFile && (droppedFile.name.endsWith('.docx') || droppedFile.name.endsWith('.doc'))) {
       setFile(droppedFile);
       setError('');
+      setUploadDialogOpen(true);
     } else {
       setError('Please upload a .docx or .doc file');
     }
@@ -105,7 +126,51 @@ export function Home() {
     if (selectedFile) {
       setFile(selectedFile);
       setError('');
+      setUploadDialogOpen(true);
     }
+  };
+
+  const handleCloseUploadDialog = () => {
+    setUploadDialogOpen(false);
+    setFile(null);
+    setUploadTab(0);
+    setUploadTheme('report');
+    setCustomPrompt('');
+    setCustomCls('');
+    setCustomPreamble('');
+    // Clean up image previews
+    referenceImages.forEach(img => URL.revokeObjectURL(img.preview));
+    setReferenceImages([]);
+  };
+
+  const handleAddReferenceImages = (files: FileList | null) => {
+    if (!files) return;
+    const newImages: { file: File; preview: string }[] = [];
+    for (let i = 0; i < files.length && referenceImages.length + newImages.length < 10; i++) {
+      const f = files[i];
+      if (f.type.startsWith('image/')) {
+        newImages.push({ file: f, preview: URL.createObjectURL(f) });
+      }
+    }
+    if (newImages.length > 0) {
+      setReferenceImages(prev => [...prev, ...newImages]);
+    }
+  };
+
+  const handleRemoveReferenceImage = (index: number) => {
+    setReferenceImages(prev => {
+      URL.revokeObjectURL(prev[index].preview);
+      return prev.filter((_, i) => i !== index);
+    });
+  };
+
+  const fileToBase64 = (f: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(f);
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = reject;
+    });
   };
 
   const handleUpload = async () => {
@@ -120,9 +185,22 @@ export function Home() {
     }, 200);
 
     try {
-      const result = await api.uploadFile(file, 'report', undefined);
+      // Convert reference images to base64
+      const imageData: string[] = [];
+      for (const img of referenceImages) {
+        const base64 = await fileToBase64(img.file);
+        imageData.push(base64);
+      }
+
+      const result = await api.uploadFile(file, uploadTheme, undefined, {
+        customPrompt: customPrompt || undefined,
+        customCls: customCls || undefined,
+        customPreamble: customPreamble || undefined,
+        images: imageData.length > 0 ? imageData : undefined,
+      });
       setUploadProgress(100);
       clearInterval(progressInterval);
+      handleCloseUploadDialog();
       navigate(`/editor/${result.project_id}`);
     } catch (err: any) {
       setError(err.message || 'Upload failed');
@@ -277,44 +355,6 @@ export function Home() {
             </Box>
           </Box>
 
-          {/* File selected */}
-          {file && (
-            <Box sx={{ 
-              mt: 2, 
-              p: 1.5, 
-              border: `1px solid ${borderColor}`,
-              borderRadius: 1,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              bgcolor: 'background.paper',
-            }}>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <Description sx={{ fontSize: 18, color: 'primary.main' }} />
-                <Typography variant="body2" sx={{ fontSize: 12 }}>{file.name}</Typography>
-              </Box>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <Button 
-                  size="small" 
-                  variant="contained" 
-                  onClick={handleUpload}
-                  disabled={uploading}
-                  sx={{ fontSize: 11, py: 0.5 }}
-                >
-                  Convert
-                </Button>
-                <IconButton size="small" onClick={() => setFile(null)} sx={{ p: 0.25 }}>
-                  <Close sx={{ fontSize: 16 }} />
-                </IconButton>
-              </Box>
-            </Box>
-          )}
-
-          {uploading && (
-            <Box sx={{ mt: 1 }}>
-              <LinearProgress variant="determinate" value={uploadProgress} sx={{ height: 2 }} />
-            </Box>
-          )}
         </Box>
       </Box>
 
@@ -421,6 +461,213 @@ export function Home() {
           <Delete sx={{ mr: 1.5, fontSize: 16 }} /> Delete
         </MenuItem>
       </Menu>
+
+      {/* Upload Customization Dialog */}
+      <Dialog 
+        open={uploadDialogOpen} 
+        onClose={handleCloseUploadDialog}
+        maxWidth="md"
+        fullWidth
+      >
+        <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1, pb: 1 }}>
+          <Settings sx={{ fontSize: 20 }} />
+          <Typography variant="h6" sx={{ fontSize: 16, flex: 1 }}>Convert Document</Typography>
+          {file && (
+            <Typography variant="caption" color="text.secondary">
+              {file.name}
+            </Typography>
+          )}
+        </DialogTitle>
+        
+        <DialogContent>
+          {uploading && (
+            <Box sx={{ mb: 2 }}>
+              <LinearProgress variant="determinate" value={uploadProgress} sx={{ height: 3, borderRadius: 1 }} />
+              <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: 'block' }}>
+                Converting document...
+              </Typography>
+            </Box>
+          )}
+          
+          {error && <Alert severity="error" sx={{ mb: 2, fontSize: 12 }}>{error}</Alert>}
+          
+          <Tabs value={uploadTab} onChange={(_, v) => setUploadTab(v)} sx={{ mb: 2, borderBottom: 1, borderColor: 'divider' }}>
+            <Tab label="Template" sx={{ fontSize: 12 }} />
+            <Tab label="AI Instructions" sx={{ fontSize: 12 }} />
+            <Tab label="Reference Images" sx={{ fontSize: 12 }} icon={referenceImages.length > 0 ? <Chip size="small" label={referenceImages.length} sx={{ height: 16, fontSize: 10, ml: 0.5 }} /> : undefined} iconPosition="end" />
+            <Tab label="Custom Class" sx={{ fontSize: 12 }} />
+            <Tab label="Preamble" sx={{ fontSize: 12 }} />
+          </Tabs>
+          
+          {/* Template Tab */}
+          {uploadTab === 0 && (
+            <Box>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 2, fontSize: 12 }}>
+                Select a LaTeX template style for your converted document.
+              </Typography>
+              <FormControl fullWidth size="small">
+                <InputLabel sx={{ fontSize: 13 }}>Template</InputLabel>
+                <Select
+                  value={uploadTheme}
+                  label="Template"
+                  onChange={(e) => setUploadTheme(e.target.value)}
+                  sx={{ fontSize: 13 }}
+                >
+                  <MenuItem value="report" sx={{ fontSize: 13 }}>Report</MenuItem>
+                  <MenuItem value="journal" sx={{ fontSize: 13 }}>Journal Article</MenuItem>
+                  <MenuItem value="thesis" sx={{ fontSize: 13 }}>Thesis</MenuItem>
+                  <MenuItem value="problem_set" sx={{ fontSize: 13 }}>Problem Set</MenuItem>
+                  <MenuItem value="letter" sx={{ fontSize: 13 }}>Letter</MenuItem>
+                </Select>
+              </FormControl>
+            </Box>
+          )}
+          
+          {/* AI Instructions Tab */}
+          {uploadTab === 1 && (
+            <Box>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 2, fontSize: 12 }}>
+                Provide custom instructions for the AI when converting your document.
+              </Typography>
+              <TextField
+                fullWidth
+                multiline
+                rows={8}
+                placeholder="Example: Focus on mathematical notation. Use theorem environments for proofs. Include a table of contents. Preserve all code blocks with listings package..."
+                value={customPrompt}
+                onChange={(e) => setCustomPrompt(e.target.value)}
+                sx={{ '& textarea': { fontSize: 12, fontFamily: 'monospace' } }}
+              />
+            </Box>
+          )}
+          
+          {/* Reference Images Tab */}
+          {uploadTab === 2 && (
+            <Box>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 2, fontSize: 12 }}>
+                Add reference images (diagrams, screenshots, handwritten notes) to help the AI understand your document better.
+              </Typography>
+              
+              <Box
+                sx={{
+                  border: '2px dashed',
+                  borderColor: 'divider',
+                  borderRadius: 1,
+                  p: 3,
+                  textAlign: 'center',
+                  cursor: 'pointer',
+                  mb: 2,
+                  '&:hover': { borderColor: 'primary.main', bgcolor: 'action.hover' },
+                }}
+                onClick={() => document.getElementById('reference-image-input')?.click()}
+              >
+                <input
+                  id="reference-image-input"
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  style={{ display: 'none' }}
+                  onChange={(e) => handleAddReferenceImages(e.target.files)}
+                />
+                <ImageIcon sx={{ fontSize: 40, color: 'text.disabled', mb: 1 }} />
+                <Typography variant="body2" color="text.secondary" sx={{ fontSize: 12 }}>
+                  Click or drag images here (max 10)
+                </Typography>
+              </Box>
+              
+              {referenceImages.length > 0 && (
+                <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                  {referenceImages.map((img, index) => (
+                    <Box
+                      key={index}
+                      sx={{
+                        position: 'relative',
+                        width: 80,
+                        height: 80,
+                        borderRadius: 1,
+                        overflow: 'hidden',
+                        border: 1,
+                        borderColor: 'divider',
+                      }}
+                    >
+                      <img
+                        src={img.preview}
+                        alt={`Reference ${index + 1}`}
+                        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                      />
+                      <IconButton
+                        size="small"
+                        onClick={() => handleRemoveReferenceImage(index)}
+                        sx={{
+                          position: 'absolute',
+                          top: 2,
+                          right: 2,
+                          bgcolor: 'rgba(0,0,0,0.6)',
+                          color: 'white',
+                          p: 0.25,
+                          '&:hover': { bgcolor: 'error.main' },
+                        }}
+                      >
+                        <Close sx={{ fontSize: 14 }} />
+                      </IconButton>
+                    </Box>
+                  ))}
+                </Box>
+              )}
+            </Box>
+          )}
+          
+          {/* Custom Class Tab */}
+          {uploadTab === 3 && (
+            <Box>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 2, fontSize: 12 }}>
+                Paste custom document class (.cls) content. This will be included as a separate file.
+              </Typography>
+              <TextField
+                fullWidth
+                multiline
+                rows={8}
+                placeholder="% Custom document class&#10;\NeedsTeXFormat{LaTeX2e}&#10;\ProvidesClass{myclass}[2024/01/01]&#10;..."
+                value={customCls}
+                onChange={(e) => setCustomCls(e.target.value)}
+                sx={{ '& textarea': { fontSize: 11, fontFamily: 'monospace' } }}
+              />
+            </Box>
+          )}
+          
+          {/* Preamble Tab */}
+          {uploadTab === 4 && (
+            <Box>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 2, fontSize: 12 }}>
+                Add custom LaTeX preamble (packages, macros, settings) to be included in the document.
+              </Typography>
+              <TextField
+                fullWidth
+                multiline
+                rows={8}
+                placeholder="% Custom packages&#10;\usepackage{tikz}&#10;\usepackage{algorithm2e}&#10;&#10;% Custom macros&#10;\newcommand{\R}{\mathbb{R}}&#10;..."
+                value={customPreamble}
+                onChange={(e) => setCustomPreamble(e.target.value)}
+                sx={{ '& textarea': { fontSize: 11, fontFamily: 'monospace' } }}
+              />
+            </Box>
+          )}
+        </DialogContent>
+        
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={handleCloseUploadDialog} size="small" disabled={uploading}>
+            Cancel
+          </Button>
+          <Button 
+            variant="contained" 
+            onClick={handleUpload}
+            disabled={uploading}
+            size="small"
+          >
+            {uploading ? 'Converting...' : 'Convert to LaTeX'}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }

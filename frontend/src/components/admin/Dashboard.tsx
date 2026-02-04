@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Box,
   Typography,
@@ -39,6 +40,7 @@ import {
   Add,
   ContentCopy,
   VpnKey,
+  Home,
 } from '@mui/icons-material';
 import { api } from '../../services/api';
 
@@ -70,6 +72,7 @@ interface Invite {
 }
 
 export function AdminDashboard() {
+  const navigate = useNavigate();
   const [tab, setTab] = useState(0);
   const [users, setUsers] = useState<User[]>([]);
   const [invites, setInvites] = useState<Invite[]>([]);
@@ -185,7 +188,14 @@ export function AdminDashboard() {
   return (
     <Box sx={{ maxWidth: 1200, mx: 'auto', p: 3 }}>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-        <Typography variant="h6" fontWeight={600}>Admin</Typography>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <Tooltip title="Back to Editor">
+            <IconButton size="small" onClick={() => navigate('/')}>
+              <Home sx={{ fontSize: 18 }} />
+            </IconButton>
+          </Tooltip>
+          <Typography variant="h6" fontWeight={600}>Admin</Typography>
+        </Box>
         <IconButton size="small" onClick={loadData}>
           <Refresh sx={{ fontSize: 18 }} />
         </IconButton>
