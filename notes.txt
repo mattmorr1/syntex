@@ -1,5 +1,6 @@
 to do:
--
+- ux?
+- streamlit pdf viewer
 
 
 gcloud builds submit --config=config/cloudbuild.yaml
