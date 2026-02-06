@@ -70,13 +70,24 @@ async def chat(request: Request, body: ChatRequest, user: dict = Depends(get_cur
 @limiter.limit("20/minute")
 async def agent_edit(request: Request, body: AgentEditRequest, user: dict = Depends(get_current_user)):
     api_key = await get_user_api_key(user)
-    result, tokens = await gemini_service.agent_edit(
-        body.document,
-        body.instruction,
-        body.model or "pro",
-        api_key=api_key,
-        images=body.images
-    )
+
+    # Use batched processing if forced or for large documents
+    if body.force_batch:
+        result, tokens = await gemini_service.agent_edit_batched(
+            body.document,
+            body.instruction,
+            body.model or "pro",
+            api_key=api_key,
+            images=body.images
+        )
+    else:
+        result, tokens = await gemini_service.agent_edit(
+            body.document,
+            body.instruction,
+            body.model or "pro",
+            api_key=api_key,
+            images=body.images
+        )
     
     # Update tokens
     if body.model == "flash":

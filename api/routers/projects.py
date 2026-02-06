@@ -123,8 +123,8 @@ async def upload_file(
 ):
     import json as json_module
     
-    if not file.filename.endswith(('.docx', '.doc')):
-        raise HTTPException(status_code=400, detail="Only DOCX/DOC files supported")
+    if not file.filename.endswith(('.docx', '.doc', '.pdf')):
+        raise HTTPException(status_code=400, detail="Only DOCX, DOC, or PDF files supported")
     
     # Parse images from JSON
     image_list = None
@@ -143,11 +143,21 @@ async def upload_file(
         with open(file_path, "wb") as f:
             f.write(content)
         
-        # Extract text from DOCX
+        # Extract text from document
         try:
-            from docx import Document
-            doc = Document(file_path)
-            text_content = "\n".join([para.text for para in doc.paragraphs])
+            if file.filename.endswith('.pdf'):
+                # Extract text from PDF using PyMuPDF
+                import fitz
+                pdf_doc = fitz.open(file_path)
+                text_content = ""
+                for page in pdf_doc:
+                    text_content += page.get_text()
+                pdf_doc.close()
+            else:
+                # Extract text from DOCX
+                from docx import Document
+                doc = Document(file_path)
+                text_content = "\n".join([para.text for para in doc.paragraphs])
         except:
             text_content = content.decode("utf-8", errors="ignore")[:5000]
         

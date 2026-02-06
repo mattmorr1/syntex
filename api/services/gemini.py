@@ -2,6 +2,8 @@ import os
 import json
 import httpx
 import hashlib
+import asyncio
+import re
 from typing import Tuple, List, Optional, Dict, Any
 from datetime import datetime, timedelta
 from config import Config
@@ -9,27 +11,34 @@ from config import Config
 FLASH_MODEL = os.getenv("GEMINI_FLASH_MODEL", "gemini-2.0-flash")
 PRO_MODEL = os.getenv("GEMINI_PRO_MODEL", "gemini-1.5-pro")
 
-# Structured output schemas
+# Structured output schemas - Operation-based for token efficiency
 AGENT_EDIT_SCHEMA = {
     "type": "object",
     "properties": {
         "explanation": {"type": "string"},
-        "changes": {
+        "operations": {
             "type": "array",
             "items": {
                 "type": "object",
                 "properties": {
-                    "start_line": {"type": "integer"},
+                    "type": {
+                        "type": "string",
+                        "enum": ["wrap", "replace", "insert", "delete"]
+                    },
+                    "line": {"type": "integer"},
                     "end_line": {"type": "integer"},
-                    "original": {"type": "string"},
-                    "replacement": {"type": "string"},
+                    "start_char": {"type": "integer"},
+                    "end_char": {"type": "integer"},
+                    "content": {"type": "string"},
+                    "wrapper": {"type": "string"},
+                    "position": {"type": "string", "enum": ["before", "after"]},
                     "reason": {"type": "string"}
                 },
-                "required": ["start_line", "end_line", "original", "replacement", "reason"]
+                "required": ["type", "line", "reason"]
             }
         }
     },
-    "required": ["explanation", "changes"]
+    "required": ["explanation", "operations"]
 }
 
 class PromptCache:
@@ -199,10 +208,12 @@ class GeminiService:
             return "\\section{"
         if "convert" in prompt.lower() or "latex" in prompt.lower():
             return self._sample_latex()
-        if "edit" in prompt.lower() or "change" in prompt.lower():
+        if "edit" in prompt.lower() or "operation" in prompt.lower():
             return json.dumps({
-                "explanation": "Dev mode: Sample edit",
-                "changes": [{"start_line": 1, "end_line": 2, "original": "Original", "replacement": "New", "reason": "Dev"}]
+                "explanation": "Dev mode: Sample edit using operations",
+                "operations": [
+                    {"type": "wrap", "line": 1, "start_char": 0, "end_char": -1, "wrapper": "\\textbf{$}", "reason": "Dev: make bold"}
+                ]
             })
         return "Development mode response."
     
@@ -285,64 +296,363 @@ Output complete compilable LaTeX only:"""
         )
     
     async def agent_edit(
-        self, 
-        document: str, 
+        self,
+        document: str,
         instruction: str,
-        model: str = "pro", 
+        model: str = "pro",
         api_key: Optional[str] = None,
         images: Optional[List[str]] = None
     ) -> Tuple[Dict[str, Any], int]:
         model_name = FLASH_MODEL if model == "flash" else PRO_MODEL
         key = self.get_api_key(api_key)
-        
-        # Try to cache the document for repeated edits
-        cached_content = None
-        if key and len(document) > 2000:
-            cached_content = await self._create_cached_content(
-                f"LaTeX document to edit:\n{document}",
-                model_name,
-                key,
-                "latex_document"
-            )
-        
-        # If cached, we only send the instruction
-        if cached_content:
-            prompt = f"""Edit the cached LaTeX document per this instruction.
-{'Reference images provided.' if images else ''}
 
-Instruction: {instruction}
+        lines = document.split('\n')
 
-Provide changes as JSON with explanation and changes array."""
-        else:
-            # Fallback: include document in prompt (truncated)
-            doc = document[:4000] if len(document) > 4000 else document
-            prompt = f"""Edit LaTeX document per instruction.
-{'Images provided for reference.' if images else ''}
+        # Auto-batch for large documents (>150 lines)
+        if len(lines) > 150:
+            print(f"Large document ({len(lines)} lines), using batched processing")
+            return await self.agent_edit_batched(document, instruction, model, api_key, images)
 
-Document:
-{doc}
+        # Add line numbers to document for reference
+        numbered_doc = '\n'.join(f"{i+1:4d}| {line}" for i, line in enumerate(lines))
 
-Instruction: {instruction}
+        # Truncate if too long, but keep more context with line numbers
+        if len(numbered_doc) > 12000:
+            numbered_doc = numbered_doc[:12000] + "\n... (truncated)"
 
-Provide changes as JSON with explanation and changes array."""
+        # Operation-based prompt - saves tokens by not repeating content
+        prompt = f"""You are a LaTeX editor. Edit the document using OPERATIONS (not full text).
+
+DOCUMENT (with line numbers):
+{numbered_doc}
+
+INSTRUCTION: {instruction}
+{'REFERENCE IMAGES: Analyze the provided images for context.' if images else ''}
+
+OUTPUT FORMAT - Use these operation types:
+
+1. WRAP - Wrap existing text with LaTeX command (use $ as placeholder for original text)
+   {{"type": "wrap", "line": 5, "start_char": 0, "end_char": -1, "wrapper": "\\\\textbf{{$}}", "reason": "Make bold"}}
+   - start_char/end_char: character positions within line (0-indexed, -1 = end of line)
+   - wrapper: LaTeX command with $ placeholder for original text
+
+2. REPLACE - Replace specific text (only for small changes like typos, symbols)
+   {{"type": "replace", "line": 10, "start_char": 5, "end_char": 15, "content": "new text", "reason": "Fix typo"}}
+
+3. INSERT - Add new content before/after a line
+   {{"type": "insert", "line": 20, "position": "after", "content": "\\\\newpage", "reason": "Add page break"}}
+
+4. DELETE - Remove lines
+   {{"type": "delete", "line": 30, "end_line": 32, "reason": "Remove section"}}
+
+RULES:
+- Use WRAP for formatting (bold, italic, colors, environments) - this saves tokens
+- Use REPLACE only for small text changes (< 50 chars), not for formatting
+- For multi-line formatting, use multiple WRAP operations
+- Line numbers are 1-indexed (first line is 1)
+- Be precise with line numbers - check the document carefully
+
+Respond with JSON containing explanation and operations array."""
 
         text, tokens = await self._call_api(
-            model_name, 
-            prompt, 
-            temperature=0.2, 
-            max_tokens=2048, 
-            api_key=api_key, 
+            model_name,
+            prompt,
+            temperature=0.1,  # Lower temperature for more precise operations
+            max_tokens=2048,
+            api_key=api_key,
             images=images,
-            response_schema=AGENT_EDIT_SCHEMA,
-            cached_content=cached_content
+            response_schema=AGENT_EDIT_SCHEMA
         )
-        
+
         try:
             result = json.loads(text)
-            return result, tokens
+            # Process operations into changes for the frontend
+            processed = self._process_operations(result.get("operations", []), lines)
+            return {
+                "explanation": result.get("explanation", ""),
+                "changes": processed
+            }, tokens
         except json.JSONDecodeError:
             return {"explanation": "Parse error", "changes": []}, tokens
-    
+
+    def _process_operations(self, operations: List[Dict], lines: List[str]) -> List[Dict]:
+        """Convert operations into concrete changes with original/replacement text."""
+        changes = []
+
+        for op in operations:
+            try:
+                op_type = op.get("type")
+                line_num = op.get("line", 1)
+                reason = op.get("reason", "")
+
+                # Validate line number
+                if line_num < 1 or line_num > len(lines):
+                    continue
+
+                line_idx = line_num - 1
+                line_text = lines[line_idx]
+
+                if op_type == "wrap":
+                    start_char = op.get("start_char", 0)
+                    end_char = op.get("end_char", -1)
+                    wrapper = op.get("wrapper", "$")
+
+                    if end_char == -1:
+                        end_char = len(line_text)
+
+                    # Get the text to wrap
+                    original_text = line_text[start_char:end_char]
+                    # Apply wrapper ($ is placeholder for original text)
+                    wrapped_text = wrapper.replace("$", original_text)
+                    # Build full replacement line
+                    replacement = line_text[:start_char] + wrapped_text + line_text[end_char:]
+
+                    changes.append({
+                        "start_line": line_num,
+                        "end_line": line_num,
+                        "original": line_text,
+                        "replacement": replacement,
+                        "reason": reason
+                    })
+
+                elif op_type == "replace":
+                    start_char = op.get("start_char", 0)
+                    end_char = op.get("end_char", len(line_text))
+                    content = op.get("content", "")
+
+                    if end_char == -1:
+                        end_char = len(line_text)
+
+                    original_text = line_text
+                    replacement = line_text[:start_char] + content + line_text[end_char:]
+
+                    changes.append({
+                        "start_line": line_num,
+                        "end_line": line_num,
+                        "original": original_text,
+                        "replacement": replacement,
+                        "reason": reason
+                    })
+
+                elif op_type == "insert":
+                    position = op.get("position", "after")
+                    content = op.get("content", "")
+
+                    if position == "before":
+                        changes.append({
+                            "start_line": line_num,
+                            "end_line": line_num,
+                            "original": line_text,
+                            "replacement": content + "\n" + line_text,
+                            "reason": reason
+                        })
+                    else:  # after
+                        changes.append({
+                            "start_line": line_num,
+                            "end_line": line_num,
+                            "original": line_text,
+                            "replacement": line_text + "\n" + content,
+                            "reason": reason
+                        })
+
+                elif op_type == "delete":
+                    end_line = op.get("end_line", line_num)
+                    if end_line > len(lines):
+                        end_line = len(lines)
+
+                    original_lines = lines[line_idx:end_line]
+
+                    changes.append({
+                        "start_line": line_num,
+                        "end_line": end_line,
+                        "original": "\n".join(original_lines),
+                        "replacement": "",
+                        "reason": reason
+                    })
+
+            except Exception as e:
+                print(f"Error processing operation: {op}, error: {e}")
+                continue
+
+        return changes
+
+    def _chunk_document(self, lines: List[str], max_lines_per_chunk: int = 100) -> List[Dict]:
+        """
+        Split document into chunks, preferring natural LaTeX boundaries.
+        Returns list of {start_line, end_line, lines} dicts.
+        """
+        chunks = []
+        current_start = 0
+        total_lines = len(lines)
+
+        # Patterns that indicate good split points
+        section_patterns = [
+            r'\\section\{',
+            r'\\subsection\{',
+            r'\\chapter\{',
+            r'\\begin\{document\}',
+            r'\\end\{document\}',
+            r'^\\begin\{(figure|table|equation|align|itemize|enumerate)\}',
+            r'^$',  # Empty lines
+        ]
+        section_regex = re.compile('|'.join(section_patterns))
+
+        while current_start < total_lines:
+            chunk_end = min(current_start + max_lines_per_chunk, total_lines)
+
+            # If not at the end, try to find a natural break point
+            if chunk_end < total_lines:
+                # Look backwards for a good split point
+                best_split = chunk_end
+                for i in range(chunk_end, max(current_start + 20, chunk_end - 30), -1):
+                    if i < total_lines and section_regex.search(lines[i]):
+                        best_split = i
+                        break
+                chunk_end = best_split
+
+            chunks.append({
+                'start_line': current_start + 1,  # 1-indexed
+                'end_line': chunk_end,
+                'lines': lines[current_start:chunk_end]
+            })
+            current_start = chunk_end
+
+        return chunks
+
+    async def _process_chunk(
+        self,
+        chunk: Dict,
+        instruction: str,
+        full_lines: List[str],
+        model_name: str,
+        api_key: Optional[str],
+        images: Optional[List[str]] = None
+    ) -> Tuple[List[Dict], int]:
+        """Process a single chunk and return operations with adjusted line numbers."""
+
+        # Build numbered view of this chunk with context
+        chunk_lines = chunk['lines']
+        start_line = chunk['start_line']
+
+        # Add a few lines of context before/after
+        context_before = max(0, start_line - 4)
+        context_after = min(len(full_lines), chunk['end_line'] + 3)
+
+        # Build the view
+        view_lines = []
+        for i in range(context_before, context_after):
+            prefix = ">>>" if start_line <= i + 1 <= chunk['end_line'] else "   "
+            view_lines.append(f"{prefix}{i+1:4d}| {full_lines[i]}")
+
+        numbered_chunk = '\n'.join(view_lines)
+
+        prompt = f"""You are a LaTeX editor. Edit ONLY the lines marked with >>> (lines {start_line}-{chunk['end_line']}).
+
+DOCUMENT CHUNK (>>> marks editable lines):
+{numbered_chunk}
+
+INSTRUCTION: {instruction}
+{'REFERENCE IMAGES: Analyze the provided images.' if images else ''}
+
+OUTPUT OPERATIONS for lines {start_line}-{chunk['end_line']} only. Use:
+- WRAP: {{"type": "wrap", "line": N, "start_char": 0, "end_char": -1, "wrapper": "\\\\textbf{{$}}", "reason": "..."}}
+- REPLACE: {{"type": "replace", "line": N, "start_char": 0, "end_char": 10, "content": "new", "reason": "..."}}
+- INSERT: {{"type": "insert", "line": N, "position": "after", "content": "...", "reason": "..."}}
+- DELETE: {{"type": "delete", "line": N, "end_line": M, "reason": "..."}}
+
+RULES:
+- Only output operations for lines {start_line}-{chunk['end_line']}
+- Use $ as placeholder for original text in WRAP
+- Be precise with line numbers
+
+JSON with explanation and operations:"""
+
+        text, tokens = await self._call_api(
+            model_name,
+            prompt,
+            temperature=0.1,
+            max_tokens=1500,
+            api_key=api_key,
+            images=images if chunk['start_line'] == 1 else None,  # Only send images to first chunk
+            response_schema=AGENT_EDIT_SCHEMA
+        )
+
+        try:
+            result = json.loads(text)
+            operations = result.get("operations", [])
+
+            # Filter operations to only include those in this chunk's range
+            valid_ops = [
+                op for op in operations
+                if start_line <= op.get('line', 0) <= chunk['end_line']
+            ]
+
+            return valid_ops, tokens
+        except json.JSONDecodeError:
+            return [], tokens
+
+    async def agent_edit_batched(
+        self,
+        document: str,
+        instruction: str,
+        model: str = "pro",
+        api_key: Optional[str] = None,
+        images: Optional[List[str]] = None,
+        max_lines_per_chunk: int = 80
+    ) -> Tuple[Dict[str, Any], int]:
+        """
+        Process large documents in batches for better handling.
+        Chunks the document, processes in parallel, merges results.
+        """
+        model_name = FLASH_MODEL if model == "flash" else PRO_MODEL
+        key = self.get_api_key(api_key)
+        lines = document.split('\n')
+
+        # For small documents, use regular processing
+        if len(lines) <= max_lines_per_chunk:
+            return await self.agent_edit(document, instruction, model, api_key, images)
+
+        # Chunk the document
+        chunks = self._chunk_document(lines, max_lines_per_chunk)
+        print(f"Processing {len(chunks)} chunks for {len(lines)} lines")
+
+        # Process chunks in parallel (with concurrency limit)
+        semaphore = asyncio.Semaphore(3)  # Max 3 concurrent requests
+
+        async def process_with_limit(chunk):
+            async with semaphore:
+                return await self._process_chunk(chunk, instruction, lines, model_name, key, images)
+
+        # Run all chunks
+        results = await asyncio.gather(*[process_with_limit(c) for c in chunks])
+
+        # Merge operations and count tokens
+        all_operations = []
+        total_tokens = 0
+        for ops, tokens in results:
+            all_operations.extend(ops)
+            total_tokens += tokens
+
+        # Sort by line number and remove duplicates
+        all_operations.sort(key=lambda x: (x.get('line', 0), x.get('start_char', 0)))
+
+        # Remove duplicate operations on same line
+        seen_lines = set()
+        unique_ops = []
+        for op in all_operations:
+            line_key = (op.get('line'), op.get('type'), op.get('start_char', 0))
+            if line_key not in seen_lines:
+                seen_lines.add(line_key)
+                unique_ops.append(op)
+
+        # Process operations into changes
+        processed = self._process_operations(unique_ops, lines)
+
+        return {
+            "explanation": f"Processed {len(chunks)} sections, found {len(processed)} changes",
+            "changes": processed
+        }, total_tokens
+
     async def improve_content(self, content: str) -> Tuple[str, int]:
         prompt = f"Improve this LaTeX:\n{content[:3000]}\n\nOutput improved LaTeX only:"
         return await self._call_api(PRO_MODEL, prompt, temperature=0.2, max_tokens=4096)

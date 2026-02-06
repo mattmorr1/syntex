@@ -113,6 +113,7 @@ class AgentEditRequest(BaseModel):
     document: str
     model: Optional[Literal["flash", "pro"]] = "pro"
     images: Optional[List[str]] = None  # Base64 encoded images
+    force_batch: Optional[bool] = False  # Force batched processing for thorough analysis
 
 class DiffChange(BaseModel):
     start_line: int

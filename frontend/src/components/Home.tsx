@@ -22,6 +22,7 @@ import {
   Select,
   Tabs,
   Tab,
+  Chip,
 } from '@mui/material';
 import {
   Add,
@@ -112,12 +113,12 @@ export function Home() {
     setDragActive(false);
     
     const droppedFile = e.dataTransfer.files?.[0];
-    if (droppedFile && (droppedFile.name.endsWith('.docx') || droppedFile.name.endsWith('.doc'))) {
+    if (droppedFile && (droppedFile.name.endsWith('.docx') || droppedFile.name.endsWith('.doc') || droppedFile.name.endsWith('.pdf'))) {
       setFile(droppedFile);
       setError('');
       setUploadDialogOpen(true);
     } else {
-      setError('Please upload a .docx or .doc file');
+      setError('Please upload a .docx, .doc, or .pdf file');
     }
   }, []);
 
@@ -344,7 +345,7 @@ export function Home() {
               <input
                 id="file-input"
                 type="file"
-                accept=".doc,.docx"
+                accept=".doc,.docx,.pdf"
                 onChange={handleFileSelect}
                 style={{ display: 'none' }}
               />

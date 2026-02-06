@@ -6,12 +6,12 @@ import {
   Button,
   IconButton,
   CircularProgress,
-  Chip,
   FormControl,
   Select,
   MenuItem,
   Collapse,
   Alert,
+  Tooltip,
 } from '@mui/material';
 import {
   Send,
@@ -22,6 +22,7 @@ import {
   SmartToy,
   Image as ImageIcon,
   Close,
+  Layers,
 } from '@mui/icons-material';
 import { api } from '../../services/api';
 
@@ -31,7 +32,6 @@ interface DiffChange {
   original: string;
   replacement: string;
   reason: string;
-  accepted?: boolean;
 }
 
 interface AgentPanelProps {
@@ -43,6 +43,7 @@ interface AgentPanelProps {
 export function AgentPanel({ projectId, document, onApplyChanges }: AgentPanelProps) {
   const [instruction, setInstruction] = useState('');
   const [model, setModel] = useState<'flash' | 'pro'>('pro');
+  const [batchMode, setBatchMode] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [explanation, setExplanation] = useState('');
@@ -121,9 +122,9 @@ export function AgentPanel({ projectId, document, onApplyChanges }: AgentPanelPr
         imageData.push(base64);
       }
       
-      const result = await api.agentEdit(projectId, instruction, document, model, imageData);
+      const result = await api.agentEdit(projectId, instruction, document, model, imageData, batchMode);
       setExplanation(result.explanation);
-      setChanges(result.changes.map(c => ({ ...c, accepted: undefined })));
+      setChanges(result.changes);
       setTokensUsed(result.tokens);
       // Clear images after successful submit
       images.forEach(img => URL.revokeObjectURL(img.preview));
@@ -133,7 +134,7 @@ export function AgentPanel({ projectId, document, onApplyChanges }: AgentPanelPr
     } finally {
       setLoading(false);
     }
-  }, [instruction, projectId, document, model, images]);
+  }, [instruction, projectId, document, model, images, batchMode]);
 
   const fileToBase64 = (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
@@ -151,45 +152,74 @@ export function AgentPanel({ projectId, document, onApplyChanges }: AgentPanelPr
     }
   };
 
+  const applyChange = (change: DiffChange) => {
+    const lines = document.split('\n');
+    const beforeLines = lines.slice(0, change.start_line - 1);
+    const afterLines = lines.slice(change.end_line);
+    const replacementLines = change.replacement.split('\n');
+
+    const newDoc = [...beforeLines, ...replacementLines, ...afterLines].join('\n');
+    onApplyChanges(newDoc);
+  };
+
   const handleAcceptChange = (index: number) => {
-    setChanges(prev => prev.map((c, i) => 
-      i === index ? { ...c, accepted: true } : c
-    ));
+    const change = changes[index];
+
+    // Apply the change immediately
+    applyChange(change);
+
+    // Remove this change from the list (it's been applied)
+    // Adjust line numbers for remaining changes
+    const lineDiff = change.replacement.split('\n').length - (change.end_line - change.start_line + 1);
+
+    setChanges(prev => prev
+      .filter((_, i) => i !== index)
+      .map(c => {
+        if (c.start_line > change.end_line) {
+          return {
+            ...c,
+            start_line: c.start_line + lineDiff,
+            end_line: c.end_line + lineDiff,
+          };
+        }
+        return c;
+      })
+    );
   };
 
   const handleRejectChange = (index: number) => {
-    setChanges(prev => prev.map((c, i) => 
-      i === index ? { ...c, accepted: false } : c
-    ));
+    // Just remove the change from the list
+    setChanges(prev => prev.filter((_, i) => i !== index));
   };
 
-  const handleApplyAll = () => {
-    const acceptedChanges = changes.filter(c => c.accepted === true);
-    if (acceptedChanges.length === 0) return;
-    
+  const handleAcceptAll = () => {
+    // Apply all remaining changes at once (from bottom to top to preserve line numbers)
     let newDoc = document;
     const lines = newDoc.split('\n');
-    
-    const sortedChanges = [...acceptedChanges].sort((a, b) => b.start_line - a.start_line);
-    
+
+    const sortedChanges = [...changes].sort((a, b) => b.start_line - a.start_line);
+
     for (const change of sortedChanges) {
       const beforeLines = lines.slice(0, change.start_line - 1);
       const afterLines = lines.slice(change.end_line);
       const replacementLines = change.replacement.split('\n');
-      
+
       lines.splice(0, lines.length, ...beforeLines, ...replacementLines, ...afterLines);
     }
-    
+
     newDoc = lines.join('\n');
     onApplyChanges(newDoc);
-    
+
     setChanges([]);
     setExplanation('');
     setInstruction('');
   };
 
-  const acceptedCount = changes.filter(c => c.accepted === true).length;
-  const pendingCount = changes.filter(c => c.accepted === undefined).length;
+  const handleRejectAll = () => {
+    setChanges([]);
+  };
+
+  const pendingCount = changes.length;
 
   return (
     <Box sx={{ 
@@ -254,21 +284,35 @@ export function AgentPanel({ projectId, document, onApplyChanges }: AgentPanelPr
           <Box>
             <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
               <Typography variant="caption" color="text.secondary" fontWeight={500}>
-                Changes ({changes.length})
+                {changes.length} change{changes.length !== 1 ? 's' : ''} suggested
               </Typography>
-              <Box sx={{ display: 'flex', gap: 0.5 }}>
-                {pendingCount > 0 && (
-                  <Chip label={pendingCount} size="small" color="warning" sx={{ height: 18, fontSize: 10 }} />
-                )}
-                {acceptedCount > 0 && (
-                  <Chip label={acceptedCount} size="small" color="success" sx={{ height: 18, fontSize: 10 }} />
-                )}
-              </Box>
+              {changes.length > 1 && (
+                <Box sx={{ display: 'flex', gap: 0.5 }}>
+                  <Button
+                    size="small"
+                    variant="text"
+                    color="error"
+                    onClick={handleRejectAll}
+                    sx={{ fontSize: 10, py: 0, minWidth: 'auto', px: 1 }}
+                  >
+                    Reject all
+                  </Button>
+                  <Button
+                    size="small"
+                    variant="text"
+                    color="success"
+                    onClick={handleAcceptAll}
+                    sx={{ fontSize: 10, py: 0, minWidth: 'auto', px: 1 }}
+                  >
+                    Accept all
+                  </Button>
+                </Box>
+              )}
             </Box>
-            
+
             {changes.map((change, index) => (
               <CompactDiffCard
-                key={index}
+                key={`${change.start_line}-${change.end_line}-${index}`}
                 change={change}
                 onAccept={() => handleAcceptChange(index)}
                 onReject={() => handleRejectChange(index)}
@@ -298,23 +342,6 @@ export function AgentPanel({ projectId, document, onApplyChanges }: AgentPanelPr
           </Box>
         )}
       </Box>
-
-      {/* Apply Button */}
-      {acceptedCount > 0 && (
-        <Box sx={{ px: 1.5, pb: 1 }}>
-          <Button
-            fullWidth
-            variant="contained"
-            color="success"
-            size="small"
-            onClick={handleApplyAll}
-            startIcon={<Check sx={{ fontSize: 16 }} />}
-            sx={{ fontSize: 12, py: 0.5 }}
-          >
-            Apply {acceptedCount} change{acceptedCount !== 1 ? 's' : ''}
-          </Button>
-        </Box>
-      )}
 
       {/* Input */}
       <Box 
@@ -418,7 +445,19 @@ export function AgentPanel({ projectId, document, onApplyChanges }: AgentPanelPr
               <MenuItem value="pro" sx={{ fontSize: 11 }}>Pro</MenuItem>
             </Select>
           </FormControl>
-          
+
+          <Tooltip title="Batch mode - thorough analysis for large docs">
+            <IconButton
+              size="small"
+              onClick={() => setBatchMode(!batchMode)}
+              color={batchMode ? 'primary' : 'default'}
+              disabled={loading}
+              sx={{ p: 0.5 }}
+            >
+              <Layers sx={{ fontSize: 18 }} />
+            </IconButton>
+          </Tooltip>
+
           <Button
             variant="contained"
             onClick={handleSubmit}
@@ -443,22 +482,15 @@ interface CompactDiffCardProps {
 
 function CompactDiffCard({ change, onAccept, onReject }: CompactDiffCardProps) {
   const [expanded, setExpanded] = useState(true);
-  
-  const getBorderColor = () => {
-    if (change.accepted === true) return 'success.main';
-    if (change.accepted === false) return 'error.main';
-    return 'divider';
-  };
-  
+
   return (
     <Box
       sx={{
         mb: 1,
         borderRadius: 0.5,
         border: 1,
-        borderColor: getBorderColor(),
+        borderColor: 'divider',
         overflow: 'hidden',
-        opacity: change.accepted === false ? 0.5 : 1,
         fontSize: 11,
       }}
     >
@@ -482,9 +514,27 @@ function CompactDiffCard({ change, onAccept, onReject }: CompactDiffCardProps) {
             {change.reason}
           </Typography>
         </Box>
-        {expanded ? <ExpandLess sx={{ fontSize: 16 }} /> : <ExpandMore sx={{ fontSize: 16 }} />}
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+          <IconButton
+            size="small"
+            color="error"
+            onClick={(e) => { e.stopPropagation(); onReject(); }}
+            sx={{ p: 0.25 }}
+          >
+            <Clear sx={{ fontSize: 14 }} />
+          </IconButton>
+          <IconButton
+            size="small"
+            color="success"
+            onClick={(e) => { e.stopPropagation(); onAccept(); }}
+            sx={{ p: 0.25 }}
+          >
+            <Check sx={{ fontSize: 14 }} />
+          </IconButton>
+          {expanded ? <ExpandLess sx={{ fontSize: 16 }} /> : <ExpandMore sx={{ fontSize: 16 }} />}
+        </Box>
       </Box>
-      
+
       <Collapse in={expanded}>
         <Box sx={{ fontFamily: 'monospace', fontSize: 10 }}>
           <Box sx={{ bgcolor: 'error.dark', color: 'error.contrastText', px: 1, py: 0.5 }}>
@@ -492,48 +542,13 @@ function CompactDiffCard({ change, onAccept, onReject }: CompactDiffCardProps) {
               - {change.original.substring(0, 200)}{change.original.length > 200 ? '...' : ''}
             </pre>
           </Box>
-          
+
           <Box sx={{ bgcolor: 'success.dark', color: 'success.contrastText', px: 1, py: 0.5 }}>
             <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
               + {change.replacement.substring(0, 200)}{change.replacement.length > 200 ? '...' : ''}
             </pre>
           </Box>
         </Box>
-        
-        {change.accepted === undefined && (
-          <Box sx={{ p: 0.5, display: 'flex', gap: 0.5, justifyContent: 'flex-end', bgcolor: 'background.paper' }}>
-            <IconButton
-              size="small"
-              color="error"
-              onClick={(e) => { e.stopPropagation(); onReject(); }}
-              sx={{ p: 0.25 }}
-            >
-              <Clear sx={{ fontSize: 14 }} />
-            </IconButton>
-            <IconButton
-              size="small"
-              color="success"
-              onClick={(e) => { e.stopPropagation(); onAccept(); }}
-              sx={{ p: 0.25 }}
-            >
-              <Check sx={{ fontSize: 14 }} />
-            </IconButton>
-          </Box>
-        )}
-        
-        {change.accepted === true && (
-          <Box sx={{ px: 1, py: 0.25, bgcolor: 'success.light', display: 'flex', alignItems: 'center', gap: 0.5 }}>
-            <Check sx={{ fontSize: 12 }} color="success" />
-            <Typography variant="caption" color="success.dark" sx={{ fontSize: 10 }}>Accepted</Typography>
-          </Box>
-        )}
-        
-        {change.accepted === false && (
-          <Box sx={{ px: 1, py: 0.25, bgcolor: 'error.light', display: 'flex', alignItems: 'center', gap: 0.5 }}>
-            <Clear sx={{ fontSize: 12 }} color="error" />
-            <Typography variant="caption" color="error.dark" sx={{ fontSize: 10 }}>Rejected</Typography>
-          </Box>
-        )}
       </Collapse>
     </Box>
   );

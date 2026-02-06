@@ -45,11 +45,13 @@ export function Login() {
   const handleGoogleLogin = async (withInvite = false) => {
     setError('');
     setGoogleLoading(true);
-    
+
     try {
       await loginWithGoogle(withInvite ? inviteCode : undefined);
     } catch (err: any) {
-      if (err.message === 'INVITE_REQUIRED') {
+      if (err.message === 'POPUP_CLOSED') {
+        // User closed popup, just reset state silently
+      } else if (err.message === 'INVITE_REQUIRED') {
         setNeedsInvite(true);
         setError('New account - please enter an invite code');
       } else {

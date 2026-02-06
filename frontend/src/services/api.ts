@@ -99,7 +99,7 @@ export const api = {
       body: JSON.stringify({ project_id: projectId, message, context, model }),
     }),
 
-  agentEdit: (projectId: string, instruction: string, document: string, model?: string, images?: string[]) =>
+  agentEdit: (projectId: string, instruction: string, document: string, model?: string, images?: string[], forceBatch?: boolean) =>
     request<{
       explanation: string;
       changes: Array<{
@@ -112,7 +112,7 @@ export const api = {
       tokens: number;
     }>('/ai/agent-edit', {
       method: 'POST',
-      body: JSON.stringify({ project_id: projectId, instruction, document, model, images }),
+      body: JSON.stringify({ project_id: projectId, instruction, document, model, images, force_batch: forceBatch }),
     }),
 
   getChatHistory: (projectId: string) =>

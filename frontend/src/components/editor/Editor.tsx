@@ -37,6 +37,7 @@ import {
   Check,
   Close,
   Edit,
+  Search,
 } from '@mui/icons-material';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { useThemeStore } from '../../store/themeStore';
@@ -44,7 +45,7 @@ import { useEditorStore, ProjectFile } from '../../store/editorStore';
 import { api } from '../../services/api';
 import { MonacoEditor } from './MonacoEditor';
 import { AgentPanel } from '../ai/AgentPanel';
-import { PdfViewer } from './PdfViewer';
+import { PdfViewer, PdfViewerHandle } from './PdfViewer';
 
 const FILE_ICONS: Record<string, React.ReactNode> = {
   tex: <Description fontSize="small" />,
@@ -88,6 +89,7 @@ export function Editor() {
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleValue, setTitleValue] = useState('');
   const titleInputRef = useRef<HTMLInputElement>(null);
+  const pdfViewerRef = useRef<import('./PdfViewer').PdfViewerHandle>(null);
 
   useEffect(() => {
     if (projectId) {
@@ -405,9 +407,20 @@ export function Editor() {
                 <ZoomIn sx={{ fontSize: 16 }} />
               </IconButton>
             </Tooltip>
-            
+
+            <Tooltip title="Search PDF (Ctrl+F)">
+              <IconButton
+                size="small"
+                onClick={() => pdfViewerRef.current?.openSearch()}
+                disabled={!pdfUrl}
+                sx={{ p: 0.5 }}
+              >
+                <Search sx={{ fontSize: 16 }} />
+              </IconButton>
+            </Tooltip>
+
             <Box sx={{ width: 1, height: 16, bgcolor: borderColor, mx: 0.5 }} />
-            
+
             <Tooltip title="Toggle Theme">
               <IconButton size="small" onClick={toggleTheme} sx={{ p: 0.5 }}>
                 {mode === 'dark' ? <LightMode sx={{ fontSize: 18 }} /> : <DarkMode sx={{ fontSize: 18 }} />}
@@ -467,7 +480,7 @@ export function Editor() {
                     {compileError}
                   </Alert>
                 ) : pdfUrl ? (
-                  <PdfViewer url={pdfUrl} zoom={zoom} />
+                  <PdfViewer ref={pdfViewerRef} url={pdfUrl} zoom={zoom} />
                 ) : (
                   <Box sx={{ 
                     display: 'flex', 

@@ -1,6 +1,6 @@
 to do:
-- ux?
-- streamlit pdf viewer
+- redo ux?
 
+- failing at big tasks
 
 gcloud builds submit --config=config/cloudbuild.yaml

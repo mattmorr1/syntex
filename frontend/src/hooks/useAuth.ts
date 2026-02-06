@@ -47,10 +47,21 @@ export function useAuth() {
     if (!firebaseEnabled) {
       throw new Error('Firebase not configured');
     }
-    
-    const { token: idToken, user: firebaseUser } = await firebaseGoogleLogin();
+
+    let idToken: string;
+    try {
+      const result = await firebaseGoogleLogin();
+      idToken = result.token;
+    } catch (err: any) {
+      // Re-throw popup closed error as-is for the UI to handle
+      if (err.message === 'POPUP_CLOSED') {
+        throw err;
+      }
+      throw err;
+    }
+
     setToken(idToken);
-    
+
     try {
       const response = await api.googleAuth(idToken, inviteCode);
       setUser(response.user);
