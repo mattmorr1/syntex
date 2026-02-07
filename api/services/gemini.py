@@ -11,6 +11,13 @@ from config import Config
 FLASH_MODEL = os.getenv("GEMINI_FLASH_MODEL", "gemini-2.0-flash")
 PRO_MODEL = os.getenv("GEMINI_PRO_MODEL", "gemini-1.5-pro")
 
+class TokenLimitError(Exception):
+    """Raised when Gemini response is truncated due to max_tokens limit."""
+    def __init__(self, message: str, partial_text: str = "", tokens: int = 0):
+        super().__init__(message)
+        self.partial_text = partial_text
+        self.tokens = tokens
+
 # Structured output schemas - Operation-based for token efficiency
 AGENT_EDIT_SCHEMA = {
     "type": "object",
@@ -143,11 +150,11 @@ class GeminiService:
         return parts
     
     async def _call_api(
-        self, 
-        model: str, 
-        prompt: str, 
-        temperature: float = 0.2, 
-        max_tokens: int = 2048, 
+        self,
+        model: str,
+        prompt: str,
+        temperature: float = 0.2,
+        max_tokens: int = 2048,
         api_key: Optional[str] = None,
         images: Optional[List[str]] = None,
         response_schema: Optional[Dict] = None,
@@ -156,50 +163,64 @@ class GeminiService:
         key = self.get_api_key(api_key)
         if not key:
             return self._dev_response(prompt), 0
-        
+
         url = f"{self.base_url}/models/{model}:generateContent?key={key}"
-        
+
         # Build parts
         parts = self._build_image_parts(images)
         parts.append({"text": prompt})
-        
+
         # Build generation config
         gen_config: Dict[str, Any] = {
             "temperature": temperature,
             "maxOutputTokens": max_tokens,
         }
-        
+
         # Add structured output if schema provided
         if response_schema:
             gen_config["responseMimeType"] = "application/json"
             gen_config["responseSchema"] = response_schema
-        
+
         payload: Dict[str, Any] = {
             "contents": [{"parts": parts}],
             "generationConfig": gen_config
         }
-        
+
         # Use cached content if available
         if cached_content:
             payload["cachedContent"] = cached_content
-        
+
         async with httpx.AsyncClient() as client:
             response = await client.post(url, json=payload, timeout=120.0)
-            
+
             if response.status_code != 200:
                 raise Exception(f"Gemini API Error: {response.status_code} - {response.text}")
-            
+
             result = response.json()
-            
+
             try:
-                text = result["candidates"][0]["content"]["parts"][0]["text"]
+                candidate = result["candidates"][0]
+                text = candidate["content"]["parts"][0]["text"]
+                finish_reason = candidate.get("finishReason", "")
+
                 # Track cached vs non-cached tokens
                 usage = result.get("usageMetadata", {})
                 tokens = usage.get("totalTokenCount", 0)
                 cached_tokens = usage.get("cachedContentTokenCount", 0)
                 if cached_tokens > 0:
                     print(f"Used {cached_tokens} cached tokens out of {tokens} total")
+
+                # Check if response was truncated due to token limit
+                if finish_reason == "MAX_TOKENS":
+                    raise TokenLimitError(
+                        f"Response truncated at {tokens} tokens (max_output={max_tokens})",
+                        partial_text=text,
+                        tokens=tokens
+                    )
+
                 return text, tokens
+            except TokenLimitError:
+                raise
             except (KeyError, IndexError):
                 raise Exception(f"Failed to parse response: {result}")
     
@@ -295,6 +316,68 @@ Output complete compilable LaTeX only:"""
             cached_content=cached_content
         )
     
+    def _try_repair_json(self, text: str) -> Optional[Dict]:
+        """Attempt to repair truncated JSON from a cut-off response."""
+        text = text.strip()
+        if not text:
+            return None
+
+        # Try parsing as-is first
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+
+        # Try closing truncated JSON structures
+        # Common case: operations array was cut mid-object
+        repairs = [
+            text + '}]}',       # close object + array + root
+            text + ']}',        # close array + root
+            text + '}',         # close root object
+            text + '"]]}',      # close string + array + root
+            text + '"}]}',      # close string value + object + array + root
+        ]
+
+        for attempt in repairs:
+            try:
+                result = json.loads(attempt)
+                if isinstance(result, dict) and "operations" in result:
+                    return result
+            except json.JSONDecodeError:
+                continue
+
+        # Try extracting valid operations up to the truncation point
+        try:
+            # Find the last complete operation object
+            ops_match = re.search(r'"operations"\s*:\s*\[', text)
+            if ops_match:
+                ops_start = ops_match.end()
+                # Find all complete JSON objects in the operations array
+                depth = 0
+                last_complete = ops_start
+                for i in range(ops_start, len(text)):
+                    if text[i] == '{':
+                        depth += 1
+                    elif text[i] == '}':
+                        depth -= 1
+                        if depth == 0:
+                            last_complete = i + 1
+
+                if last_complete > ops_start:
+                    # Extract explanation
+                    exp_match = re.search(r'"explanation"\s*:\s*"([^"]*)"', text)
+                    explanation = exp_match.group(1) if exp_match else "Partial result (response was truncated)"
+
+                    truncated = text[:ops_match.end()] + text[ops_match.end():last_complete] + ']}'
+                    # Prepend the explanation if needed
+                    if '"explanation"' not in truncated:
+                        truncated = '{"explanation":"' + explanation + '",' + truncated[1:]
+                    return json.loads(truncated)
+        except (json.JSONDecodeError, Exception):
+            pass
+
+        return None
+
     async def agent_edit(
         self,
         document: str,
@@ -308,8 +391,8 @@ Output complete compilable LaTeX only:"""
 
         lines = document.split('\n')
 
-        # Auto-batch for large documents (>150 lines)
-        if len(lines) > 150:
+        # Auto-batch for large documents (>100 lines)
+        if len(lines) > 100:
             print(f"Large document ({len(lines)} lines), using batched processing")
             return await self.agent_edit_batched(document, instruction, model, api_key, images)
 
@@ -351,29 +434,57 @@ RULES:
 - For multi-line formatting, use multiple WRAP operations
 - Line numbers are 1-indexed (first line is 1)
 - Be precise with line numbers - check the document carefully
+- Keep operations concise - minimize the number of operations needed
 
 Respond with JSON containing explanation and operations array."""
 
-        text, tokens = await self._call_api(
-            model_name,
-            prompt,
-            temperature=0.1,  # Lower temperature for more precise operations
-            max_tokens=2048,
-            api_key=api_key,
-            images=images,
-            response_schema=AGENT_EDIT_SCHEMA
-        )
+        try:
+            text, tokens = await self._call_api(
+                model_name,
+                prompt,
+                temperature=0.1,
+                max_tokens=4096,
+                api_key=api_key,
+                images=images,
+                response_schema=AGENT_EDIT_SCHEMA
+            )
+        except TokenLimitError as e:
+            # Response was truncated - try to salvage partial result
+            print(f"Token limit hit in agent_edit ({e.tokens} tokens), attempting repair")
+            repaired = self._try_repair_json(e.partial_text)
+            if repaired:
+                processed = self._process_operations(repaired.get("operations", []), lines)
+                if processed:
+                    return {
+                        "explanation": repaired.get("explanation", "") + " (some changes may be missing due to response size limit)",
+                        "changes": processed
+                    }, e.tokens
+
+            # Repair failed - fall back to batched processing
+            print(f"JSON repair failed, falling back to batched processing")
+            return await self.agent_edit_batched(document, instruction, model, api_key, images)
 
         try:
             result = json.loads(text)
-            # Process operations into changes for the frontend
             processed = self._process_operations(result.get("operations", []), lines)
             return {
                 "explanation": result.get("explanation", ""),
                 "changes": processed
             }, tokens
         except json.JSONDecodeError:
-            return {"explanation": "Parse error", "changes": []}, tokens
+            # Try repairing malformed JSON
+            repaired = self._try_repair_json(text)
+            if repaired:
+                processed = self._process_operations(repaired.get("operations", []), lines)
+                if processed:
+                    return {
+                        "explanation": repaired.get("explanation", "") + " (response required repair)",
+                        "changes": processed
+                    }, tokens
+
+            # Last resort: fall back to batched processing
+            print(f"Parse error in agent_edit, falling back to batched processing")
+            return await self.agent_edit_batched(document, instruction, model, api_key, images)
 
     def _process_operations(self, operations: List[Dict], lines: List[str]) -> List[Dict]:
         """Convert operations into concrete changes with original/replacement text."""
@@ -567,15 +678,27 @@ RULES:
 
 JSON with explanation and operations:"""
 
-        text, tokens = await self._call_api(
-            model_name,
-            prompt,
-            temperature=0.1,
-            max_tokens=1500,
-            api_key=api_key,
-            images=images if chunk['start_line'] == 1 else None,  # Only send images to first chunk
-            response_schema=AGENT_EDIT_SCHEMA
-        )
+        try:
+            text, tokens = await self._call_api(
+                model_name,
+                prompt,
+                temperature=0.1,
+                max_tokens=2048,
+                api_key=api_key,
+                images=images if chunk['start_line'] == 1 else None,  # Only send images to first chunk
+                response_schema=AGENT_EDIT_SCHEMA
+            )
+        except TokenLimitError as e:
+            # Try to salvage partial result from truncated response
+            repaired = self._try_repair_json(e.partial_text)
+            if repaired:
+                operations = repaired.get("operations", [])
+                valid_ops = [
+                    op for op in operations
+                    if start_line <= op.get('line', 0) <= chunk['end_line']
+                ]
+                return valid_ops, e.tokens
+            return [], e.tokens
 
         try:
             result = json.loads(text)
@@ -589,6 +712,14 @@ JSON with explanation and operations:"""
 
             return valid_ops, tokens
         except json.JSONDecodeError:
+            repaired = self._try_repair_json(text)
+            if repaired:
+                operations = repaired.get("operations", [])
+                valid_ops = [
+                    op for op in operations
+                    if start_line <= op.get('line', 0) <= chunk['end_line']
+                ]
+                return valid_ops, tokens
             return [], tokens
 
     async def agent_edit_batched(
@@ -608,11 +739,7 @@ JSON with explanation and operations:"""
         key = self.get_api_key(api_key)
         lines = document.split('\n')
 
-        # For small documents, use regular processing
-        if len(lines) <= max_lines_per_chunk:
-            return await self.agent_edit(document, instruction, model, api_key, images)
-
-        # Chunk the document
+        # Chunk the document (even small docs get chunked when called as fallback)
         chunks = self._chunk_document(lines, max_lines_per_chunk)
         print(f"Processing {len(chunks)} chunks for {len(lines)} lines")
 
