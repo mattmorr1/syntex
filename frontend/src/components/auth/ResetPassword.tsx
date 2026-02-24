@@ -49,10 +49,13 @@ export function ResetPassword() {
     >
       <Card sx={{ maxWidth: 400, width: '100%' }}>
         <CardContent sx={{ p: 4 }}>
-          <Typography variant="h4" fontWeight={600} textAlign="center" mb={1}>
-            Reset Password
-          </Typography>
-          <Typography color="text.secondary" textAlign="center" mb={4}>
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1, mb: 1 }}>
+            <img src="/syntex.svg" alt="syntex" style={{ width: 24, height: 24 }} />
+            <Typography variant="h5" fontWeight={600}>
+              Reset Password
+            </Typography>
+          </Box>
+          <Typography sx={{ fontSize: 13, color: 'text.secondary', textAlign: 'center', mb: 4 }}>
             Enter your email to receive a reset link
           </Typography>
 

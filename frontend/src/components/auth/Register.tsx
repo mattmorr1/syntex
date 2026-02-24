@@ -86,16 +86,18 @@ export function Register() {
     >
       <Card sx={{ maxWidth: 400, width: '100%' }}>
         <CardContent sx={{ p: 4 }}>
-          <Typography variant="h5" fontWeight={600} textAlign="center" mb={1}>
-            Create Account
-          </Typography>
-          <Typography variant="body2" color="text.secondary" textAlign="center" mb={3}>
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1, mb: 1 }}>
+            <img src="/syntex.svg" alt="syntex" style={{ width: 24, height: 24 }} />
+            <Typography variant="h5" fontWeight={600}>
+              Create Account
+            </Typography>
+          </Box>
+          <Typography sx={{ fontSize: 13, color: 'text.secondary', textAlign: 'center', mb: 3 }}>
             Invite-only access
           </Typography>
 
-          {error && <Alert severity="error" sx={{ mb: 2, fontSize: 13 }}>{error}</Alert>}
+          {error && <Alert severity="error" sx={{ mb: 2, fontSize: 12 }}>{error}</Alert>}
 
-          {/* Invite Code - Always visible */}
           <TextField
             fullWidth
             label="Invite Code"
@@ -122,9 +124,7 @@ export function Register() {
               </Button>
 
               <Divider sx={{ my: 2 }}>
-                <Typography variant="caption" color="text.secondary">
-                  or
-                </Typography>
+                <Typography sx={{ fontSize: 11, color: 'text.secondary' }}>or</Typography>
               </Divider>
             </>
           )}
@@ -139,7 +139,7 @@ export function Register() {
               size="small"
               sx={{ mb: 2 }}
             />
-            
+
             <TextField
               fullWidth
               label="Email"
@@ -150,7 +150,7 @@ export function Register() {
               size="small"
               sx={{ mb: 2 }}
             />
-            
+
             <TextField
               fullWidth
               label="Password"
@@ -170,7 +170,7 @@ export function Register() {
                 ),
               }}
             />
-            
+
             <TextField
               fullWidth
               label="Confirm Password"
@@ -192,7 +192,7 @@ export function Register() {
               {loading ? <CircularProgress size={20} /> : 'Create Account'}
             </Button>
 
-            <Typography variant="body2" textAlign="center" sx={{ fontSize: 13 }}>
+            <Typography sx={{ fontSize: 13, textAlign: 'center' }}>
               Already have an account?{' '}
               <Link component={RouterLink} to="/login">
                 Sign in

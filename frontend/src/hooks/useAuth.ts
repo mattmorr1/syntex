@@ -47,10 +47,15 @@ export function useAuth() {
     if (!firebaseEnabled) {
       throw new Error('Firebase not configured');
     }
-    
-    const { token: idToken, user: firebaseUser } = await firebaseGoogleLogin();
-    setToken(idToken);
-    
+
+    // Reuse existing Firebase token if we already authenticated (e.g. invite code retry)
+    let idToken = token;
+    if (!idToken) {
+      const { token: newToken } = await firebaseGoogleLogin();
+      idToken = newToken;
+      setToken(idToken);
+    }
+
     try {
       const response = await api.googleAuth(idToken, inviteCode);
       setUser(response.user);
@@ -62,7 +67,7 @@ export function useAuth() {
       }
       throw err;
     }
-  }, [navigate, setToken, setUser]);
+  }, [navigate, token, setToken, setUser]);
 
   const logout = useCallback(async () => {
     if (firebaseEnabled) {

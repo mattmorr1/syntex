@@ -10,29 +10,27 @@ export function PdfViewer({ url, zoom }: PdfViewerProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
 
-  const isDataUrl = url.startsWith('data:');
-  
   return (
     <Box sx={{ width: '100%', height: '100%', position: 'relative' }}>
       {loading && (
-        <Box sx={{ 
-          position: 'absolute', 
-          inset: 0, 
-          display: 'flex', 
-          alignItems: 'center', 
+        <Box sx={{
+          position: 'absolute',
+          inset: 0,
+          display: 'flex',
+          alignItems: 'center',
           justifyContent: 'center',
           zIndex: 1,
         }}>
           <CircularProgress size={20} />
         </Box>
       )}
-      
+
       {error ? (
-        <Box sx={{ 
-          display: 'flex', 
-          alignItems: 'center', 
-          justifyContent: 'center', 
-          height: '100%' 
+        <Box sx={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          height: '100%'
         }}>
           <Typography variant="caption" color="error">Failed to load PDF</Typography>
         </Box>
@@ -45,27 +43,15 @@ export function PdfViewer({ url, zoom }: PdfViewerProps) {
             transformOrigin: 'top center',
           }}
         >
-          {isDataUrl ? (
-            <embed
-              src={url}
-              type="application/pdf"
-              width="100%"
-              height="100%"
-              style={{ border: 'none', display: 'block' }}
-              onLoad={() => setLoading(false)}
-              onError={() => { setLoading(false); setError(true); }}
-            />
-          ) : (
-            <iframe
-              src={url}
-              title="PDF"
-              width="100%"
-              height="100%"
-              style={{ border: 'none', display: 'block' }}
-              onLoad={() => setLoading(false)}
-              onError={() => { setLoading(false); setError(true); }}
-            />
-          )}
+          <iframe
+            src={url}
+            title="PDF"
+            width="100%"
+            height="100%"
+            style={{ border: 'none', display: 'block' }}
+            onLoad={() => setLoading(false)}
+            onError={() => { setLoading(false); setError(true); }}
+          />
         </Box>
       )}
     </Box>

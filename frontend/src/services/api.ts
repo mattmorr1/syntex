@@ -58,19 +58,19 @@ export const api = {
     const projects = await request<any[]>('/projects');
     return projects.map(p => ({
       ...p,
-      createdAt: p.created_at || p.createdAt,
-      updatedAt: p.updated_at || p.updatedAt,
+      createdAt: p.created_at || p.createdAt || '',
+      updatedAt: p.updated_at || p.updatedAt || p.created_at || p.createdAt || '',
       mainFile: p.main_file || p.mainFile,
       customTheme: p.custom_theme || p.customTheme,
     }));
   },
-  
+
   getProject: async (id: string) => {
     const p = await request<any>(`/projects/${id}`);
     return {
       ...p,
-      createdAt: p.created_at || p.createdAt,
-      updatedAt: p.updated_at || p.updatedAt,
+      createdAt: p.created_at || p.createdAt || '',
+      updatedAt: p.updated_at || p.updatedAt || p.created_at || p.createdAt || '',
       mainFile: p.main_file || p.mainFile,
       customTheme: p.custom_theme || p.customTheme,
     };
@@ -80,16 +80,16 @@ export const api = {
     request<any>('/projects', { method: 'POST', body: JSON.stringify(data) }),
   
   saveProject: (id: string, files: any[]) =>
-    request<any>(`/save-project`, {
+    request<any>(`/projects/save-project`, {
       method: 'POST',
       body: JSON.stringify({ project_id: id, files }),
     }),
-  
+
   deleteProject: (id: string) =>
-    request<void>(`/delete-project/${id}`, { method: 'DELETE' }),
-  
+    request<void>(`/projects/delete-project/${id}`, { method: 'DELETE' }),
+
   duplicateProject: (id: string) =>
-    request<any>(`/duplicate-project/${id}`, { method: 'POST' }),
+    request<any>(`/projects/duplicate-project/${id}`, { method: 'POST' }),
   
   renameProject: (id: string, name: string) =>
     request<{ message: string; name: string }>(`/projects/${id}/rename`, {
@@ -105,10 +105,11 @@ export const api = {
     }),
 
   // AI
-  autocomplete: (context: string, cursor: number, fileName: string) =>
+  autocomplete: (context: string, cursor: number, fileName: string, signal?: AbortSignal) =>
     request<{ suggestion: string; tokens: number }>('/ai/autocomplete', {
       method: 'POST',
       body: JSON.stringify({ context, cursor_position: cursor, file_name: fileName }),
+      signal,
     }),
 
   chat: (projectId: string, message: string, context: string, model?: string) =>
@@ -117,7 +118,13 @@ export const api = {
       body: JSON.stringify({ project_id: projectId, message, context, model }),
     }),
 
-  agentEdit: (projectId: string, instruction: string, document: string, model?: string) =>
+  agentEdit: (
+    projectId: string,
+    instruction: string,
+    document: string,
+    model?: string,
+    selection?: { text: string; start_line: number; end_line: number },
+  ) =>
     request<{
       explanation: string;
       changes: Array<{
@@ -130,8 +137,64 @@ export const api = {
       tokens: number;
     }>('/ai/agent-edit', {
       method: 'POST',
-      body: JSON.stringify({ project_id: projectId, instruction, document, model }),
+      body: JSON.stringify({ project_id: projectId, instruction, document, model, selection }),
     }),
+
+  agentEditStream: async (
+    projectId: string,
+    instruction: string,
+    document: string,
+    model?: string,
+    selection?: { text: string; start_line: number; end_line: number },
+    onChunk?: (text: string) => void,
+    onResult?: (data: { explanation: string; changes: any[]; tokens: number }) => void,
+    onError?: (message: string) => void,
+  ) => {
+    const token = useAuthStore.getState().token;
+    const response = await fetch(`${API_BASE}/ai/agent-edit/stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token && { Authorization: `Bearer ${token}` }),
+      },
+      body: JSON.stringify({ project_id: projectId, instruction, document, model, selection }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: 'Request failed' }));
+      throw new Error(error.detail || 'Request failed');
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error('No response body');
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const data = line.slice(6).trim();
+          if (data === '[DONE]') return;
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed.type === 'chunk') onChunk?.(parsed.text);
+            else if (parsed.type === 'result') onResult?.(parsed);
+            else if (parsed.type === 'error') onError?.(parsed.message);
+          } catch {
+            // skip malformed chunks
+          }
+        }
+      }
+    }
+  },
 
   getChatHistory: (projectId: string) =>
     request<any[]>(`/ai/chat-history?project_id=${projectId}`),

@@ -9,6 +9,7 @@ import {
   Divider,
   Typography,
   Tooltip,
+  Chip,
 } from '@mui/material';
 import {
   DarkMode,
@@ -18,6 +19,7 @@ import {
 } from '@mui/icons-material';
 import { useState } from 'react';
 import { useThemeStore } from '../../store/themeStore';
+import { useSettingsStore } from '../../store/settingsStore';
 import { useAuth } from '../../hooks/useAuth';
 
 interface LayoutProps {
@@ -27,10 +29,12 @@ interface LayoutProps {
 export function Layout({ children }: LayoutProps) {
   const navigate = useNavigate();
   const { mode, toggleTheme } = useThemeStore();
+  const { aiModel, toggleAiModel } = useSettingsStore();
   const { user, isAdmin, logout } = useAuth();
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
 
-  const borderColor = mode === 'dark' ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)';
+  const isDark = mode === 'dark';
+  const purpleBorder = isDark ? '#4c1d95' : '#ddd6fe';
 
   const handleMenu = (event: React.MouseEvent<HTMLElement>) => {
     setAnchorEl(event.currentTarget);
@@ -41,68 +45,99 @@ export function Layout({ children }: LayoutProps) {
   };
 
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
-      {/* Minimal Header */}
-      <Box sx={{ 
-        display: 'flex', 
-        alignItems: 'center', 
-        justifyContent: 'flex-end',
-        gap: 0.5,
+    <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh', bgcolor: 'background.default' }}>
+      <Box sx={{
+        height: 40,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
         px: 2,
-        py: 1,
-        borderBottom: `1px solid ${borderColor}`,
+        borderBottom: `1px solid ${purpleBorder}`,
+        flexShrink: 0,
       }}>
-        {isAdmin && (
-          <Tooltip title="Admin">
-            <IconButton size="small" onClick={() => navigate('/admin')} sx={{ p: 0.75 }}>
-              <AdminPanelSettings sx={{ fontSize: 18 }} />
-            </IconButton>
-          </Tooltip>
-        )}
-        
-        <Tooltip title={mode === 'dark' ? 'Light mode' : 'Dark mode'}>
-          <IconButton size="small" onClick={toggleTheme} sx={{ p: 0.75 }}>
-            {mode === 'dark' ? <LightMode sx={{ fontSize: 18 }} /> : <DarkMode sx={{ fontSize: 18 }} />}
-          </IconButton>
-        </Tooltip>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <img src="/syntex.svg" alt="syntex" style={{ width: 18, height: 18 }} />
+          <Typography sx={{ fontWeight: 600, fontSize: 12, letterSpacing: '-0.01em' }}>
+            syntex
+          </Typography>
+        </Box>
 
-        {user && (
-          <>
-            <IconButton onClick={handleMenu} sx={{ ml: 0.5, p: 0.25 }}>
-              <Avatar sx={{ width: 26, height: 26, fontSize: 12, bgcolor: 'primary.main' }}>
-                {user.username[0].toUpperCase()}
-              </Avatar>
-            </IconButton>
-            <Menu
-              anchorEl={anchorEl}
-              open={Boolean(anchorEl)}
-              onClose={handleClose}
-              anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
-              transformOrigin={{ vertical: 'top', horizontal: 'right' }}
-              PaperProps={{ sx: { minWidth: 160 } }}
-            >
-              <MenuItem disabled sx={{ opacity: 1 }}>
-                <Box>
-                  <Typography variant="body2" fontWeight={500} sx={{ fontSize: 13 }}>{user.username}</Typography>
-                  <Typography variant="caption" color="text.secondary" sx={{ fontSize: 11 }}>{user.email}</Typography>
-                </Box>
-              </MenuItem>
-              <Divider />
-              <MenuItem disabled sx={{ opacity: 0.7 }}>
-                <Typography variant="caption" sx={{ fontSize: 11 }}>
-                  {user.tokensUsed.total.toLocaleString()} tokens used
-                </Typography>
-              </MenuItem>
-              <Divider />
-              <MenuItem onClick={() => { handleClose(); logout(); }} sx={{ fontSize: 13 }}>
-                <Logout sx={{ mr: 1.5, fontSize: 16 }} />
-                Sign out
-              </MenuItem>
-            </Menu>
-          </>
-        )}
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+          {isAdmin && (
+            <Tooltip title="Admin">
+              <IconButton size="small" onClick={() => navigate('/admin')} sx={{ p: 0.75 }}>
+                <AdminPanelSettings sx={{ fontSize: 16 }} />
+              </IconButton>
+            </Tooltip>
+          )}
+
+          {user && (
+            <>
+              <IconButton onClick={handleMenu} sx={{ ml: 0.5, p: 0.25 }}>
+                <Avatar sx={{
+                  width: 24,
+                  height: 24,
+                  fontSize: 10,
+                  fontWeight: 700,
+                  bgcolor: 'primary.main',
+                }}>
+                  {user.username[0].toUpperCase()}
+                </Avatar>
+              </IconButton>
+              <Menu
+                anchorEl={anchorEl}
+                open={Boolean(anchorEl)}
+                onClose={handleClose}
+                anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+                transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+                PaperProps={{ sx: { minWidth: 160 } }}
+              >
+                <MenuItem disabled sx={{ opacity: 1 }}>
+                  <Box>
+                    <Typography variant="body2" fontWeight={500} sx={{ fontSize: 12 }}>{user.username}</Typography>
+                    <Typography variant="caption" color="text.secondary" sx={{ fontSize: 10 }}>{user.email}</Typography>
+                  </Box>
+                </MenuItem>
+                <Divider />
+                <MenuItem disabled sx={{ opacity: 0.7 }}>
+                  <Typography variant="caption" sx={{ fontSize: 10 }}>
+                    {user.tokensUsed.total.toLocaleString()} tokens used
+                  </Typography>
+                </MenuItem>
+                <Divider />
+                <MenuItem onClick={toggleTheme} sx={{ fontSize: 12 }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+                    <Typography sx={{ fontSize: 11 }}>Theme</Typography>
+                    <Chip
+                      label={isDark ? 'Dark' : 'Light'}
+                      size="small"
+                      icon={isDark ? <DarkMode sx={{ fontSize: 12 }} /> : <LightMode sx={{ fontSize: 12 }} />}
+                      sx={{ height: 20, fontSize: 10, ml: 1 }}
+                    />
+                  </Box>
+                </MenuItem>
+                <MenuItem onClick={toggleAiModel} sx={{ fontSize: 12 }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+                    <Typography sx={{ fontSize: 11 }}>AI Model</Typography>
+                    <Chip
+                      label={aiModel === 'pro' ? 'Pro' : 'Flash'}
+                      size="small"
+                      color={aiModel === 'pro' ? 'primary' : 'default'}
+                      sx={{ height: 20, fontSize: 10, ml: 1 }}
+                    />
+                  </Box>
+                </MenuItem>
+                <Divider />
+                <MenuItem onClick={() => { handleClose(); logout(); }} sx={{ fontSize: 12 }}>
+                  <Logout sx={{ mr: 1.5, fontSize: 14 }} />
+                  Sign out
+                </MenuItem>
+              </Menu>
+            </>
+          )}
+        </Box>
       </Box>
-      
+
       <Box component="main" sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column' }}>
         {children}
       </Box>

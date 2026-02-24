@@ -4,14 +4,21 @@ import { Box, Typography } from '@mui/material';
 import { useThemeStore } from '../../store/themeStore';
 import { api } from '../../services/api';
 
+export interface EditorSelection {
+  text: string;
+  startLine: number;
+  endLine: number;
+}
+
 interface MonacoEditorProps {
   value: string;
   onChange: (value: string | undefined) => void;
   fileName: string;
   projectId: string;
+  onSelectionChange?: (selection: EditorSelection | null) => void;
 }
 
-export function MonacoEditor({ value, onChange, fileName, projectId }: MonacoEditorProps) {
+export function MonacoEditor({ value, onChange, fileName, projectId, onSelectionChange }: MonacoEditorProps) {
   const { mode } = useThemeStore();
   const editorRef = useRef<any>(null);
   const monacoRef = useRef<Monaco | null>(null);
@@ -19,6 +26,7 @@ export function MonacoEditor({ value, onChange, fileName, projectId }: MonacoEdi
   const [ghostPosition, setGhostPosition] = useState<{ lineNumber: number; column: number } | null>(null);
   const decorationsRef = useRef<string[]>([]);
   const autocompleteTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const handleEditorMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
@@ -51,6 +59,27 @@ export function MonacoEditor({ value, onChange, fileName, projectId }: MonacoEdi
     editor.addCommand(monaco.KeyCode.Escape, () => {
       clearGhostText();
     });
+
+    // Track selection for AI context
+    editor.onDidChangeCursorSelection(() => {
+      const sel = editor.getSelection();
+      if (!sel || sel.isEmpty()) {
+        onSelectionChange?.(null);
+        return;
+      }
+      const model = editor.getModel();
+      if (!model) return;
+      const text = model.getValueInRange(sel);
+      if (text.trim()) {
+        onSelectionChange?.({
+          text,
+          startLine: sel.startLineNumber,
+          endLine: sel.endLineNumber,
+        });
+      } else {
+        onSelectionChange?.(null);
+      }
+    });
   };
 
   const clearGhostText = useCallback(() => {
@@ -68,38 +97,51 @@ export function MonacoEditor({ value, onChange, fileName, projectId }: MonacoEdi
     
     autocompleteTimeoutRef.current = setTimeout(async () => {
       await fetchAutocomplete();
-    }, 500); // 500ms debounce
+    }, 800);
   }, []);
 
   const fetchAutocomplete = async () => {
     if (!editorRef.current) return;
-    
+
     const editor = editorRef.current;
     const position = editor.getPosition();
     const model = editor.getModel();
-    
+
     if (!position || !model) return;
-    
-    // Get context (text before cursor)
-    const textUntilPosition = model.getValueInRange({
-      startLineNumber: 1,
+
+    // Skip if line is empty or just whitespace
+    const currentLine = model.getLineContent(position.lineNumber);
+    if (!currentLine.trim()) return;
+
+    // Skip trivial triggers: comments, closing braces/brackets, very short input
+    const trimmed = currentLine.trimStart();
+    if (trimmed.startsWith('%') || /^[}\])]$/.test(trimmed)) return;
+    if (trimmed.length < 3) return;
+
+    // Send only ~50 lines before cursor instead of entire document
+    const startLine = Math.max(1, position.lineNumber - 50);
+    const context = model.getValueInRange({
+      startLineNumber: startLine,
       startColumn: 1,
       endLineNumber: position.lineNumber,
       endColumn: position.column,
     });
-    
-    // Skip if line is empty or just whitespace
-    const currentLine = model.getLineContent(position.lineNumber);
-    if (!currentLine.trim()) return;
-    
+
+    // Cancel any in-flight request
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     try {
-      const result = await api.autocomplete(textUntilPosition, textUntilPosition.length, fileName);
-      
-      if (result.suggestion && result.suggestion.trim()) {
+      const result = await api.autocomplete(context, context.length, fileName, controller.signal);
+
+      if (!controller.signal.aborted && result.suggestion && result.suggestion.trim()) {
         showGhostText(result.suggestion, position);
       }
     } catch (err) {
-      // Silent fail for autocomplete
+      // Silent fail for autocomplete (including aborted requests)
     }
   };
 
@@ -173,6 +215,9 @@ export function MonacoEditor({ value, onChange, fileName, projectId }: MonacoEdi
       if (autocompleteTimeoutRef.current) {
         clearTimeout(autocompleteTimeoutRef.current);
       }
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
     };
   }, []);
 
@@ -181,9 +226,9 @@ export function MonacoEditor({ value, onChange, fileName, projectId }: MonacoEdi
       <style>
         {`
           .ghost-text-decoration {
-            color: #6b6b6b !important;
+            color: #52525b !important;
             font-style: italic;
-            opacity: 0.6;
+            opacity: 0.5;
           }
         `}
       </style>
@@ -211,22 +256,31 @@ export function MonacoEditor({ value, onChange, fileName, projectId }: MonacoEdi
           padding: { top: 16 },
         }}
         beforeMount={(monaco) => {
-          // Define custom themes
           monaco.editor.defineTheme('uea-dark', {
             base: 'vs-dark',
             inherit: true,
             rules: [
-              { token: 'keyword.latex', foreground: 'B388FF' },
-              { token: 'command.latex', foreground: '82B1FF' },
-              { token: 'comment.latex', foreground: '6A9955' },
-              { token: 'math.latex', foreground: 'FFD700' },
+              { token: 'keyword.latex', foreground: 'c084fc' },
+              { token: 'command.latex', foreground: 'a5b4fc' },
+              { token: 'comment.latex', foreground: '52525b', fontStyle: 'italic' },
+              { token: 'math.latex', foreground: 'fbbf24' },
+              { token: 'delimiter.latex', foreground: 'e4e4e7' },
+              { token: 'string', foreground: '86efac' },
             ],
             colors: {
-              'editor.background': '#0D0D0D',
-              'editor.foreground': '#FFFFFF',
-              'editorLineNumber.foreground': '#5A5A5A',
-              'editorCursor.foreground': '#B388FF',
-              'editor.selectionBackground': '#3d3d6b50',
+              'editor.background': '#0e0e11',
+              'editor.foreground': '#d4d4d8',
+              'editorLineNumber.foreground': '#52525b',
+              'editorLineNumber.activeForeground': '#a1a1aa',
+              'editorCursor.foreground': '#7c3aed',
+              'editor.selectionBackground': '#7c3aed30',
+              'editor.lineHighlightBackground': '#18181b',
+              'editorGutter.background': '#0e0e11',
+              'editorWidget.background': '#18181b',
+              'editorWidget.border': '#3f3f46',
+              'editorSuggestWidget.background': '#18181b',
+              'editorSuggestWidget.border': '#3f3f46',
+              'editorSuggestWidget.selectedBackground': '#27272a',
             },
           });
           
@@ -234,13 +288,15 @@ export function MonacoEditor({ value, onChange, fileName, projectId }: MonacoEdi
             base: 'vs',
             inherit: true,
             rules: [
-              { token: 'keyword.latex', foreground: '6750A4' },
-              { token: 'command.latex', foreground: '1976D2' },
-              { token: 'comment.latex', foreground: '6A9955' },
-              { token: 'math.latex', foreground: 'B8860B' },
+              { token: 'keyword.latex', foreground: '6d28d9' },
+              { token: 'command.latex', foreground: '7c3aed' },
+              { token: 'comment.latex', foreground: 'a1a1aa', fontStyle: 'italic' },
+              { token: 'math.latex', foreground: 'b45309' },
             ],
             colors: {
-              'editor.background': '#FFFBFE',
+              'editor.background': '#fafafa',
+              'editor.selectionBackground': '#6d28d920',
+              'editorCursor.foreground': '#6d28d9',
             },
           });
         }}

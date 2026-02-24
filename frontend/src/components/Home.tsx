@@ -22,7 +22,6 @@ import {
   Assignment,
   School,
   Mail,
-  Tune,
   Close,
   Search,
   MoreVert,
@@ -52,14 +51,17 @@ export function Home() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [error, setError] = useState('');
   const [dragActive, setDragActive] = useState(false);
-  
+
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [menuAnchor, setMenuAnchor] = useState<{ el: HTMLElement; project: Project } | null>(null);
 
-  const borderColor = mode === 'dark' ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)';
-  const hoverBg = mode === 'dark' ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.03)';
+  const isDark = mode === 'dark';
+  const purpleBorder = isDark ? '#4c1d95' : '#ddd6fe';
+  const accentBorder = isDark ? '#3f3f46' : '#e4e4e7';
+  const hoverBg = isDark ? 'rgba(124, 58, 237, 0.06)' : 'rgba(109, 40, 217, 0.03)';
+  const surfaceBg = isDark ? '#18181b' : '#ffffff';
 
   useEffect(() => {
     loadProjects();
@@ -90,7 +92,7 @@ export function Home() {
     e.preventDefault();
     e.stopPropagation();
     setDragActive(false);
-    
+
     const droppedFile = e.dataTransfer.files?.[0];
     if (droppedFile && (droppedFile.name.endsWith('.docx') || droppedFile.name.endsWith('.doc'))) {
       setFile(droppedFile);
@@ -175,16 +177,22 @@ export function Home() {
 
   const filteredProjects = projects
     .filter((p) => p.name.toLowerCase().includes(search.toLowerCase()))
-    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+    .sort((a, b) => {
+      const aTime = new Date(b.updatedAt || b.createdAt).getTime() || 0;
+      const bTime = new Date(a.updatedAt || a.createdAt).getTime() || 0;
+      return aTime - bTime;
+    });
 
   const formatDate = (dateStr: string) => {
+    if (!dateStr) return '';
     const date = new Date(dateStr);
+    if (isNaN(date.getTime())) return '';
     const now = new Date();
     const diff = now.getTime() - date.getTime();
     const mins = Math.floor(diff / 60000);
     const hours = Math.floor(diff / 3600000);
     const days = Math.floor(diff / 86400000);
-    
+
     if (mins < 1) return 'Just now';
     if (mins < 60) return `${mins}m ago`;
     if (hours < 24) return `${hours}h ago`;
@@ -196,15 +204,15 @@ export function Home() {
   return (
     <Box sx={{ minHeight: '100vh', bgcolor: 'background.default' }}>
       {/* Create Section */}
-      <Box sx={{ 
-        borderBottom: `1px solid ${borderColor}`,
-        bgcolor: mode === 'dark' ? 'rgba(255,255,255,0.02)' : 'rgba(0,0,0,0.01)',
+      <Box sx={{
+        borderBottom: `1px solid ${purpleBorder}`,
+        bgcolor: isDark ? 'rgba(124, 58, 237, 0.02)' : 'rgba(109, 40, 217, 0.01)',
       }}>
         <Box sx={{ maxWidth: 900, mx: 'auto', px: 3, py: 3 }}>
-          <Typography variant="caption" color="text.secondary" sx={{ mb: 1.5, display: 'block', fontSize: 11 }}>
+          <Typography sx={{ mb: 1.5, fontSize: 11, color: 'text.secondary', fontWeight: 500, letterSpacing: 0.5, textTransform: 'uppercase' }}>
             Start a new document
           </Typography>
-          
+
           <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'wrap' }}>
             {TEMPLATES.map((template) => {
               const Icon = template.icon;
@@ -215,31 +223,31 @@ export function Home() {
                     sx={{
                       width: 72,
                       height: 88,
-                      border: `1px solid ${borderColor}`,
-                      borderRadius: 1,
+                      border: `1px solid ${accentBorder}`,
+                      borderRadius: '8px',
                       display: 'flex',
                       flexDirection: 'column',
                       alignItems: 'center',
                       justifyContent: 'center',
                       gap: 0.5,
                       cursor: 'pointer',
-                      bgcolor: 'background.paper',
+                      bgcolor: surfaceBg,
                       transition: 'all 0.15s',
-                      '&:hover': { 
+                      '&:hover': {
                         borderColor: 'primary.main',
                         bgcolor: hoverBg,
                       },
                     }}
                   >
                     <Icon sx={{ fontSize: 24, color: template.id === 'blank' ? 'primary.main' : 'text.secondary' }} />
-                    <Typography variant="caption" sx={{ fontSize: 10 }}>
+                    <Typography sx={{ fontSize: 10, color: 'text.secondary' }}>
                       {template.label}
                     </Typography>
                   </Box>
                 </Tooltip>
               );
             })}
-            
+
             {/* Upload Box */}
             <Box
               onDragEnter={handleDrag}
@@ -250,8 +258,8 @@ export function Home() {
               sx={{
                 width: 72,
                 height: 88,
-                border: `1px dashed ${dragActive ? 'primary.main' : borderColor}`,
-                borderRadius: 1,
+                border: `1px dashed ${dragActive ? '#7c3aed' : accentBorder}`,
+                borderRadius: '8px',
                 display: 'flex',
                 flexDirection: 'column',
                 alignItems: 'center',
@@ -271,32 +279,31 @@ export function Home() {
                 style={{ display: 'none' }}
               />
               <CloudUpload sx={{ fontSize: 24, color: 'text.disabled' }} />
-              <Typography variant="caption" sx={{ fontSize: 10, color: 'text.secondary' }}>
+              <Typography sx={{ fontSize: 10, color: 'text.secondary' }}>
                 Upload
               </Typography>
             </Box>
           </Box>
 
-          {/* File selected */}
           {file && (
-            <Box sx={{ 
-              mt: 2, 
-              p: 1.5, 
-              border: `1px solid ${borderColor}`,
-              borderRadius: 1,
+            <Box sx={{
+              mt: 2,
+              p: 1.5,
+              border: `1px solid ${purpleBorder}`,
+              borderRadius: '8px',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'space-between',
-              bgcolor: 'background.paper',
+              bgcolor: surfaceBg,
             }}>
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                 <Description sx={{ fontSize: 18, color: 'primary.main' }} />
-                <Typography variant="body2" sx={{ fontSize: 12 }}>{file.name}</Typography>
+                <Typography sx={{ fontSize: 12 }}>{file.name}</Typography>
               </Box>
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <Button 
-                  size="small" 
-                  variant="contained" 
+                <Button
+                  size="small"
+                  variant="contained"
                   onClick={handleUpload}
                   disabled={uploading}
                   sx={{ fontSize: 11, py: 0.5 }}
@@ -312,7 +319,16 @@ export function Home() {
 
           {uploading && (
             <Box sx={{ mt: 1 }}>
-              <LinearProgress variant="determinate" value={uploadProgress} sx={{ height: 2 }} />
+              <LinearProgress
+                variant="determinate"
+                value={uploadProgress}
+                sx={{
+                  height: 2,
+                  borderRadius: 1,
+                  bgcolor: accentBorder,
+                  '& .MuiLinearProgress-bar': { bgcolor: 'primary.main' },
+                }}
+              />
             </Box>
           )}
         </Box>
@@ -325,7 +341,7 @@ export function Home() {
         )}
 
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
-          <Typography variant="caption" color="text.secondary" sx={{ fontSize: 11 }}>
+          <Typography sx={{ fontSize: 11, color: 'text.secondary', fontWeight: 500, letterSpacing: 0.5, textTransform: 'uppercase' }}>
             Recent documents
           </Typography>
           <TextField
@@ -333,7 +349,7 @@ export function Home() {
             placeholder="Search"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            sx={{ 
+            sx={{
               width: 180,
               '& .MuiInputBase-root': { fontSize: 12, height: 32 },
             }}
@@ -350,13 +366,13 @@ export function Home() {
         {loading ? (
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
             {[1, 2, 3, 4].map((i) => (
-              <Skeleton key={i} variant="rounded" height={44} />
+              <Skeleton key={i} variant="rounded" height={44} sx={{ borderRadius: '8px' }} />
             ))}
           </Box>
         ) : filteredProjects.length === 0 ? (
           <Box sx={{ textAlign: 'center', py: 6 }}>
             <Description sx={{ fontSize: 40, color: 'text.disabled', mb: 1 }} />
-            <Typography variant="body2" color="text.secondary" sx={{ fontSize: 12 }}>
+            <Typography sx={{ fontSize: 12, color: 'text.secondary' }}>
               {search ? 'No documents found' : 'No documents yet'}
             </Typography>
           </Box>
@@ -372,7 +388,7 @@ export function Home() {
                   gap: 2,
                   px: 1.5,
                   py: 1,
-                  borderRadius: 0.5,
+                  borderRadius: '8px',
                   cursor: 'pointer',
                   transition: 'background 0.1s',
                   '&:hover': { bgcolor: hoverBg },
@@ -381,12 +397,12 @@ export function Home() {
               >
                 <Description sx={{ fontSize: 18, color: 'primary.main', opacity: 0.8 }} />
                 <Box sx={{ flex: 1, minWidth: 0 }}>
-                  <Typography variant="body2" sx={{ fontSize: 13 }} noWrap>
+                  <Typography sx={{ fontSize: 13 }} noWrap>
                     {project.name}
                   </Typography>
                 </Box>
-                <Typography variant="caption" color="text.secondary" sx={{ fontSize: 11, minWidth: 60 }}>
-                  {formatDate(project.updatedAt)}
+                <Typography sx={{ fontSize: 11, color: 'text.secondary', minWidth: 60 }}>
+                  {formatDate(project.updatedAt || project.createdAt)}
                 </Typography>
                 <IconButton
                   className="actions"
@@ -408,17 +424,17 @@ export function Home() {
         onClose={handleMenuClose}
         PaperProps={{ sx: { minWidth: 140 } }}
       >
-        <MenuItem onClick={() => { navigate(`/editor/${menuAnchor?.project.id}`); handleMenuClose(); }} sx={{ fontSize: 13 }}>
-          <Edit sx={{ mr: 1.5, fontSize: 16 }} /> Open
+        <MenuItem onClick={() => { navigate(`/editor/${menuAnchor?.project.id}`); handleMenuClose(); }} sx={{ fontSize: 12 }}>
+          <Edit sx={{ mr: 1.5, fontSize: 14 }} /> Open
         </MenuItem>
-        <MenuItem onClick={handleDuplicate} sx={{ fontSize: 13 }}>
-          <ContentCopy sx={{ mr: 1.5, fontSize: 16 }} /> Duplicate
+        <MenuItem onClick={handleDuplicate} sx={{ fontSize: 12 }}>
+          <ContentCopy sx={{ mr: 1.5, fontSize: 14 }} /> Duplicate
         </MenuItem>
-        <MenuItem onClick={() => { window.open(`/download-pdf/${menuAnchor?.project.id}`); handleMenuClose(); }} sx={{ fontSize: 13 }}>
-          <Download sx={{ mr: 1.5, fontSize: 16 }} /> Download
+        <MenuItem onClick={() => { window.open(`/download-pdf/${menuAnchor?.project.id}`); handleMenuClose(); }} sx={{ fontSize: 12 }}>
+          <Download sx={{ mr: 1.5, fontSize: 14 }} /> Download
         </MenuItem>
-        <MenuItem onClick={handleDelete} sx={{ fontSize: 13, color: 'error.main' }}>
-          <Delete sx={{ mr: 1.5, fontSize: 16 }} /> Delete
+        <MenuItem onClick={handleDelete} sx={{ fontSize: 12, color: 'error.main' }}>
+          <Delete sx={{ mr: 1.5, fontSize: 14 }} /> Delete
         </MenuItem>
       </Menu>
     </Box>
