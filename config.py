@@ -34,7 +34,9 @@ class Config:
     
     # Security Configuration
     ALGORITHM = "HS256"
+    JWT_SECRET = os.getenv("JWT_SECRET", "change-me-in-production-use-a-long-random-string")
     ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
+    ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173").split(",")
     
     # File Upload Configuration
     MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", "10485760"))  # 10MB

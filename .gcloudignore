@@ -6,11 +6,10 @@
 .vscode/
 .idea/
 
-# Ignore local env files
+# Ignore local env files (env.yaml included in upload for Cloud Run deploy)
 .env
 .env.local
 .env.production
-env.yaml
 
 # Ignore node_modules (rebuilt in Docker)
 node_modules/

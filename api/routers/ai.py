@@ -1,5 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends
+from fastapi.responses import StreamingResponse
 from typing import Optional
+import json as json_lib
 
 from api.models.schemas import (
     AutocompleteRequest, AutocompleteResponse,
@@ -57,7 +59,8 @@ async def agent_edit(request: AgentEditRequest, user: dict = Depends(get_current
         result, tokens = await gemini_service.agent_edit(
             request.document,
             request.instruction,
-            request.model or "pro"
+            request.model or "pro",
+            selection=request.selection.model_dump() if request.selection else None
         )
         
         # Update tokens
@@ -89,6 +92,36 @@ async def agent_edit(request: AgentEditRequest, user: dict = Depends(get_current
             changes=[],
             tokens=0
         )
+
+@router.post("/agent-edit/stream")
+async def agent_edit_stream(request: AgentEditRequest, user: dict = Depends(get_current_user)):
+    async def event_generator():
+        try:
+            selection_dict = request.selection.model_dump() if request.selection else None
+            async for event in gemini_service.agent_edit_stream(
+                request.document,
+                request.instruction,
+                request.model or "pro",
+                selection=selection_dict
+            ):
+                if event["type"] == "chunk":
+                    yield f"data: {json_lib.dumps({'type': 'chunk', 'text': event['text']})}\n\n"
+                elif event["type"] == "result":
+                    result = event["data"]
+                    yield f"data: {json_lib.dumps({'type': 'result', 'explanation': result.get('explanation', ''), 'changes': result.get('changes', []), 'tokens': 0})}\n\n"
+        except Exception as e:
+            yield f"data: {json_lib.dumps({'type': 'error', 'message': str(e)})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
 
 @router.get("/chat-history")
 async def get_chat_history(

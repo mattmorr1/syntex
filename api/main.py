@@ -1,32 +1,55 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from datetime import datetime
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 import os
 import sys
 
-# Log startup for debugging
-print(f"Starting UEA App...")
+from config import Config
+
+print(f"Starting syntex...")
 print(f"Python path: {sys.path}")
 print(f"Working directory: {os.getcwd()}")
 print(f"PORT env: {os.environ.get('PORT', 'not set')}")
+print(f"FIREBASE_KEY_PATH: {os.environ.get('FIREBASE_KEY_PATH', 'not set')}")
 
-from api.routers import auth, projects, compile, ai, admin
-from api.routers.projects import upload_router, feedback_router
+# Check if firebase key exists
+firebase_key = os.environ.get('FIREBASE_KEY_PATH', 'firebase-key.json')
+if os.path.exists(firebase_key):
+    print(f"Firebase key found at: {firebase_key}")
+else:
+    print(f"WARNING: Firebase key not found at: {firebase_key}")
 
-print("Routers imported successfully")
+try:
+    from api.routers import auth, projects, compile, ai, admin
+    from api.routers.projects import upload_router, feedback_router
+    print("Routers imported successfully")
+except Exception as e:
+    print(f"ERROR importing routers: {e}")
+    import traceback
+    traceback.print_exc()
+    raise
+
+# Rate limiter
+limiter = Limiter(key_func=get_remote_address)
 
 app = FastAPI(
-    title="AI LaTeX Editor",
-    description="AI-powered LaTeX document editor",
+    title="syntex",
+    description="syntex - AI-powered LaTeX document editor",
     version="2.0.0"
 )
 
-# CORS
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# CORS - use configured origins instead of wildcard
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=Config.ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -73,9 +96,9 @@ async def serve_spa(full_path: str = ""):
     index_path = os.path.join(frontend_dist, "index.html")
     if os.path.exists(index_path):
         return FileResponse(index_path)
-    
+
     # Fallback for development
-    return {"message": "UEA API running. Frontend not built."}
+    return {"message": "syntex API running. Frontend not built."}
 
 if __name__ == "__main__":
     import uvicorn

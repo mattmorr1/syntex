@@ -68,15 +68,15 @@ RUN ls -la /app/api/ && ls -la /app/main.py && python -c "import main; print('ma
 COPY --from=frontend-builder /app/frontend/dist ./static/dist
 
 # Create directories
-RUN mkdir -p static/dist tmp /secrets
+RUN mkdir -p static/dist tmp
 
 # Environment variables
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONPATH=/app
 ENV PORT=8080
+ENV FIREBASE_KEY_PATH=/secrets/firebase-key.json
 
 EXPOSE 8080
 
-# Use main.py at root which imports from api.main
-CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]

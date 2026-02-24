@@ -12,6 +12,7 @@ import { ResetPassword } from './components/auth/ResetPassword';
 import { Home } from './components/Home';
 import { Editor } from './components/editor/Editor';
 import { AdminDashboard } from './components/admin/Dashboard';
+import { Settings } from './components/settings/Settings';
 
 function ProtectedRoute({ children, adminOnly = false }: { children: React.ReactNode; adminOnly?: boolean }) {
   const { isAuthenticated, user, isHydrated } = useAuthStore();
@@ -60,6 +61,12 @@ function App() {
           </ProtectedRoute>
         } />
         
+        <Route path="/settings" element={
+          <ProtectedRoute>
+            <Settings />
+          </ProtectedRoute>
+        } />
+
         <Route path="/history" element={<Navigate to="/" replace />} />
         
         <Route path="/admin" element={

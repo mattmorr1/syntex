@@ -1,16 +1,30 @@
 - abstracting layer for ai agent (langchain?)
 - worried about prompting (rate limiting, prompt cap, config in admin?)
-- how to efficiently do autofill without wasting tokens?
 - api interchanging?
-- billing?
-- make ux more usable?
 - how does admin have control over backend? -> no home button back, have to use url
 - more efficient way to create accounts?
-- sso
 - organizations?
 - add your own prompt/template (cls, other) for ai upload
+- make the generation process faster/seem more seamless
+- pdf uploads
+- upload failed? 
+- token cap
+    - monetization
+    - cost model
+- customization with invites
+- promote people to admin?
+- optimize output for UEA
+- batching/agentic until full output generated (rn token cap) -> batching should be more around if it caps out length
+- write readme, create notion site for explain use case
+- renderer viewer doesnt clear after leaving specific file
+- ux is wack
+- pdf viewer is odd
+- top bar is weird
 
-build: 
-gcloud builds submit --tag us-east1-docker.pkg.dev/uea-app-470816/uea-app/app:latest --region=us-east1 .
+-> connect to api key?
+- What types of uploads does it allow?(is there a spot for specifications that i missed)
+- Order of documents?
+- Different document icons for different types? at the top there are different icons for the different style formats so i thought that it would be helpful if the icons matched in the document area
+
 deploy: 
-gcloud run deploy uea-app --image=us-east1-docker.pkg.dev/uea-app-470816/uea-app/app:latest --region=us-east1 --platform=managed --allow-unauthenticated --memory=4Gi --cpu=2 --timeout=300 --port=8080 --env-vars-file=env.yaml --update-secrets=/app/firebase-key.json=firebase-key:latest
+gcloud builds submit --config=.cloud/cloudbuild.yaml

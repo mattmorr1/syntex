@@ -9,17 +9,14 @@ import {
   Divider,
   Typography,
   Tooltip,
-  Chip,
 } from '@mui/material';
 import {
-  DarkMode,
-  LightMode,
   AdminPanelSettings,
   Logout,
+  Settings,
 } from '@mui/icons-material';
 import { useState } from 'react';
 import { useThemeStore } from '../../store/themeStore';
-import { useSettingsStore } from '../../store/settingsStore';
 import { useAuth } from '../../hooks/useAuth';
 
 interface LayoutProps {
@@ -28,8 +25,7 @@ interface LayoutProps {
 
 export function Layout({ children }: LayoutProps) {
   const navigate = useNavigate();
-  const { mode, toggleTheme } = useThemeStore();
-  const { aiModel, toggleAiModel } = useSettingsStore();
+  const { mode } = useThemeStore();
   const { user, isAdmin, logout } = useAuth();
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
 
@@ -105,27 +101,9 @@ export function Layout({ children }: LayoutProps) {
                   </Typography>
                 </MenuItem>
                 <Divider />
-                <MenuItem onClick={toggleTheme} sx={{ fontSize: 12 }}>
-                  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
-                    <Typography sx={{ fontSize: 11 }}>Theme</Typography>
-                    <Chip
-                      label={isDark ? 'Dark' : 'Light'}
-                      size="small"
-                      icon={isDark ? <DarkMode sx={{ fontSize: 12 }} /> : <LightMode sx={{ fontSize: 12 }} />}
-                      sx={{ height: 20, fontSize: 10, ml: 1 }}
-                    />
-                  </Box>
-                </MenuItem>
-                <MenuItem onClick={toggleAiModel} sx={{ fontSize: 12 }}>
-                  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
-                    <Typography sx={{ fontSize: 11 }}>AI Model</Typography>
-                    <Chip
-                      label={aiModel === 'pro' ? 'Pro' : 'Flash'}
-                      size="small"
-                      color={aiModel === 'pro' ? 'primary' : 'default'}
-                      sx={{ height: 20, fontSize: 10, ml: 1 }}
-                    />
-                  </Box>
+                <MenuItem onClick={() => { handleClose(); navigate('/settings'); }} sx={{ fontSize: 12 }}>
+                  <Settings sx={{ mr: 1.5, fontSize: 14 }} />
+                  Settings
                 </MenuItem>
                 <Divider />
                 <MenuItem onClick={() => { handleClose(); logout(); }} sx={{ fontSize: 12 }}>

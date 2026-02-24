@@ -45,10 +45,12 @@ export const useEditorStore = create<EditorState>((set) => ({
   compileError: null,
   unsavedChanges: false,
 
-  setProject: (project) => set({ 
-    currentProject: project, 
+  setProject: (project) => set({
+    currentProject: project,
     activeFile: project?.mainFile || null,
-    unsavedChanges: false 
+    pdfUrl: null,
+    compileError: null,
+    unsavedChanges: false,
   }),
   
   setActiveFile: (fileName) => set({ activeFile: fileName }),

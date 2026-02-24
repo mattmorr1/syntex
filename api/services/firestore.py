@@ -27,18 +27,14 @@ class FirestoreService:
         return cls._instance
     
     def __init__(self):
-        # Don't initialize Firebase here - defer to _ensure_initialized()
-        # This allows the server to start immediately
-        pass
-    
+        self.db = None
+        self.enabled = False
+        self._dev_data = {"users": {}, "projects": {}, "chats": {}, "invites": {}}
+
     def _ensure_initialized(self):
         """Lazy initialization - only runs on first actual use"""
         if FirestoreService._initialized:
             return
-        
-        self.db = None
-        self.enabled = False
-        self._dev_data = {"users": {}, "projects": {}, "chats": {}, "invites": {}}
         
         try:
             key_path = Config.FIREBASE_KEY_PATH

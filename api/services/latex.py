@@ -39,9 +39,33 @@ class LaTeXService:
             
             # Determine compiler based on document
             compiler = self._detect_compiler(files, main_file)
-            
-            # Run compilation (twice for references)
-            for _ in range(2):
+            aux_file = os.path.join(temp_dir, main_file.replace(".tex", ".aux"))
+
+            # First pass
+            result = subprocess.run(
+                [compiler, "-interaction=nonstopmode", "-halt-on-error", main_file],
+                cwd=temp_dir,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout
+            )
+
+            # Check if bibtex is needed
+            needs_rerun = False
+            if os.path.exists(aux_file):
+                with open(aux_file, "r") as f:
+                    aux_content = f.read()
+                if "\\citation" in aux_content:
+                    subprocess.run(
+                        ["bibtex", main_file.replace(".tex", "")],
+                        cwd=temp_dir,
+                        capture_output=True,
+                        timeout=self.timeout
+                    )
+                    needs_rerun = True
+
+            # Only run second pass if references/citations exist
+            if needs_rerun or (result.stdout and "Rerun" in result.stdout):
                 result = subprocess.run(
                     [compiler, "-interaction=nonstopmode", "-halt-on-error", main_file],
                     cwd=temp_dir,
@@ -49,26 +73,6 @@ class LaTeXService:
                     text=True,
                     timeout=self.timeout
                 )
-            
-            # Check for bibtex
-            aux_file = os.path.join(temp_dir, main_file.replace(".tex", ".aux"))
-            if os.path.exists(aux_file):
-                with open(aux_file, "r") as f:
-                    if "\\citation" in f.read():
-                        subprocess.run(
-                            ["bibtex", main_file.replace(".tex", "")],
-                            cwd=temp_dir,
-                            capture_output=True,
-                            timeout=self.timeout
-                        )
-                        # Recompile after bibtex
-                        for _ in range(2):
-                            subprocess.run(
-                                [compiler, "-interaction=nonstopmode", main_file],
-                                cwd=temp_dir,
-                                capture_output=True,
-                                timeout=self.timeout
-                            )
             
             # Check for PDF output
             pdf_path = os.path.join(temp_dir, main_file.replace(".tex", ".pdf"))
