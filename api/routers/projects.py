@@ -115,10 +115,24 @@ async def upload_file(
     file: UploadFile = File(...),
     theme: str = Form("report"),
     custom_theme: Optional[str] = Form(None),
+    custom_prompt: Optional[str] = Form(None),
+    custom_cls: Optional[str] = Form(None),
+    custom_preamble: Optional[str] = Form(None),
+    images: Optional[str] = Form(None),  # JSON array of base64 images
     user: dict = Depends(get_current_user)
 ):
-    if not file.filename.endswith(('.docx', '.doc')):
-        raise HTTPException(status_code=400, detail="Only DOCX/DOC files supported")
+    import json as json_module
+    
+    if not file.filename.endswith(('.docx', '.doc', '.pdf')):
+        raise HTTPException(status_code=400, detail="Only DOCX, DOC, or PDF files supported")
+    
+    # Parse images from JSON
+    image_list = None
+    if images:
+        try:
+            image_list = json_module.loads(images)
+        except:
+            pass
     
     # Save file temporarily
     temp_dir = tempfile.mkdtemp()
@@ -129,27 +143,46 @@ async def upload_file(
         with open(file_path, "wb") as f:
             f.write(content)
         
-        # Extract text from DOCX
+        # Extract text from document
         try:
-            from docx import Document
-            doc = Document(file_path)
-            text_content = "\n".join([para.text for para in doc.paragraphs])
+            if file.filename.endswith('.pdf'):
+                # Extract text from PDF using PyMuPDF
+                import fitz
+                pdf_doc = fitz.open(file_path)
+                text_content = ""
+                for page in pdf_doc:
+                    text_content += page.get_text()
+                pdf_doc.close()
+            else:
+                # Extract text from DOCX
+                from docx import Document
+                doc = Document(file_path)
+                text_content = "\n".join([para.text for para in doc.paragraphs])
         except:
             text_content = content.decode("utf-8", errors="ignore")[:5000]
         
-        # Convert to LaTeX using Gemini
+        # Convert to LaTeX using Gemini with custom options
         latex_content, tokens = await gemini_service.generate_document(
-            text_content, theme, custom_theme
+            text_content, 
+            theme, 
+            custom_theme,
+            custom_prompt=custom_prompt,
+            custom_preamble=custom_preamble,
+            images=image_list
         )
         
         # Update user tokens
         await db_service.update_user_tokens(user["uid"], pro_tokens=tokens)
         
-        # Create project
+        # Build project files
         files = [
             {"name": "main.tex", "content": latex_content, "type": "tex"},
             {"name": "references.bib", "content": "", "type": "bib"}
         ]
+        
+        # Add custom class file if provided
+        if custom_cls and custom_cls.strip():
+            files.append({"name": "custom.cls", "content": custom_cls, "type": "cls"})
         
         project = await db_service.create_project(
             uid=user["uid"],

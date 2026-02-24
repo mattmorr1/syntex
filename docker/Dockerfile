@@ -25,7 +25,7 @@ RUN npm run build
 # Main application
 FROM python:3.11-slim
 
-# Install LaTeX with image support
+# Install lightweight LaTeX (English only)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     texlive-base \
     texlive-latex-base \
@@ -35,15 +35,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     texlive-lang-english \
     texlive-bibtex-extra \
     texlive-science \
-    texlive-pictures \
-    texlive-xetex \
     latexmk \
     biber \
     fonts-liberation \
-    fonts-dejavu \
     curl \
     ghostscript \
-    poppler-utils \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
@@ -55,14 +51,12 @@ COPY config/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY config/ ./config/
+COPY config/config.py ./config/config.py
+COPY config/__init__.py ./config/__init__.py
 COPY main.py .
 COPY cli.py .
 COPY api/ ./api/
 COPY templates/ ./templates/
-
-# Verify modules are importable
-RUN ls -la /app/api/ && ls -la /app/main.py && python -c "import main; print('main.py OK')"
 
 # Copy built frontend
 COPY --from=frontend-builder /app/frontend/dist ./static/dist
@@ -74,9 +68,10 @@ RUN mkdir -p static/dist tmp
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONPATH=/app
-ENV PORT=8080
-ENV FIREBASE_KEY_PATH=/secrets/firebase-key.json
 
+# Default port (Cloud Run overrides via PORT env var)
+ENV PORT=8080
 EXPOSE 8080
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+# Run the application (shell form to expand $PORT)
+CMD uvicorn api.main:app --host 0.0.0.0 --port $PORT
