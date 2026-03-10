@@ -89,7 +89,16 @@ export function Home() {
   const loadProjects = async () => {
     try {
       const data = await api.getProjects();
-      setProjects(data);
+      setProjects(data.map((p: any) => ({
+        id: p.id,
+        name: p.name,
+        files: p.files,
+        mainFile: p.main_file,
+        theme: p.theme,
+        customTheme: p.custom_theme,
+        createdAt: p.created_at,
+        updatedAt: p.updated_at,
+      })));
     } catch (err: any) {
       setError(err.message || 'Failed to load documents');
     } finally {
@@ -254,16 +263,18 @@ export function Home() {
 
   const filteredProjects = projects
     .filter((p) => p.name.toLowerCase().includes(search.toLowerCase()))
-    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+    .sort((a, b) => (new Date(b.updatedAt ?? 0).getTime() || 0) - (new Date(a.updatedAt ?? 0).getTime() || 0));
 
-  const formatDate = (dateStr: string) => {
+  const formatDate = (dateStr: string | null | undefined) => {
+    if (!dateStr) return '—';
     const date = new Date(dateStr);
+    if (isNaN(date.getTime())) return '—';
     const now = new Date();
     const diff = now.getTime() - date.getTime();
     const mins = Math.floor(diff / 60000);
     const hours = Math.floor(diff / 3600000);
     const days = Math.floor(diff / 86400000);
-    
+
     if (mins < 1) return 'Just now';
     if (mins < 60) return `${mins}m ago`;
     if (hours < 24) return `${hours}h ago`;

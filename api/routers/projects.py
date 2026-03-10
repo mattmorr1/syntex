@@ -49,13 +49,15 @@ async def create_project(request: ProjectCreate, user: dict = Depends(get_curren
 
 @router.post("/save-project")
 async def save_project(request: ProjectUpdate, user: dict = Depends(get_current_user)):
+    from datetime import datetime, timezone
     files = [f.dict() for f in request.files]
     success = await db_service.update_project(request.project_id, user["uid"], files)
-    
+
     if not success:
         raise HTTPException(status_code=404, detail="Project not found")
-    
-    return {"message": "Project saved", "project_id": request.project_id}
+
+    updated_at = datetime.now(timezone.utc).isoformat()
+    return {"message": "Project saved", "project_id": request.project_id, "updated_at": updated_at}
 
 @router.patch("/{project_id}/rename")
 async def rename_project(project_id: str, request: dict, user: dict = Depends(get_current_user)):

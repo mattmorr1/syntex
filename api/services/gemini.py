@@ -8,15 +8,30 @@ from typing import Tuple, List, Optional, Dict, Any
 from datetime import datetime, timedelta
 from config import Config
 
-FLASH_MODEL = os.getenv("GEMINI_FLASH_MODEL", "gemini-2.0-flash")
-PRO_MODEL = os.getenv("GEMINI_PRO_MODEL", "gemini-1.5-pro")
+# Gemini models
+FLASH_MODEL = os.getenv("GEMINI_FLASH_MODEL", "gemini-3.0-flash-preview")
+PRO_MODEL = os.getenv("GEMINI_PRO_MODEL", "gemini-3.1-pro-preview")
+
+# Claude models
+CLAUDE_SONNET = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
+CLAUDE_HAIKU = os.getenv("CLAUDE_FAST_MODEL", "claude-3-5-haiku-20241022")
+
+# OpenAI models
+OPENAI_GPT4 = os.getenv("OPENAI_MODEL", "gpt-4o")
+OPENAI_GPT4_MINI = os.getenv("OPENAI_FAST_MODEL", "gpt-4o-mini")
 
 class TokenLimitError(Exception):
-    """Raised when Gemini response is truncated due to max_tokens limit."""
+    """Raised when response is truncated due to max_tokens limit."""
     def __init__(self, message: str, partial_text: str = "", tokens: int = 0):
         super().__init__(message)
         self.partial_text = partial_text
         self.tokens = tokens
+
+class ContentBlockedError(Exception):
+    """Raised when content is blocked by safety filters (RECITATION, SAFETY, etc)."""
+    def __init__(self, message: str, reason: str = ""):
+        super().__init__(message)
+        self.reason = reason
 
 # Structured output schemas - Operation-based for token efficiency
 AGENT_EDIT_SCHEMA = {
@@ -49,50 +64,99 @@ AGENT_EDIT_SCHEMA = {
 }
 
 class PromptCache:
-    """Simple in-memory cache for document contexts."""
+    """Redis-backed cache for Gemini prompt context names, with in-memory fallback."""
     def __init__(self, ttl_minutes: int = 30):
-        self.cache: Dict[str, Dict] = {}
-        self.ttl = timedelta(minutes=ttl_minutes)
-    
+        self.ttl_seconds = ttl_minutes * 60
+        self._local: Dict[str, Dict] = {}
+        self._redis = None
+
+        redis_url = os.getenv("REDIS_URL")
+        if redis_url:
+            try:
+                import redis.asyncio as aioredis
+                self._redis = aioredis.from_url(redis_url, decode_responses=True)
+                print(f"Prompt cache: Redis enabled ({redis_url})")
+            except ImportError:
+                print("Prompt cache: redis package not installed, using in-memory fallback")
+            except Exception as e:
+                print(f"Prompt cache: Redis init failed ({e}), using in-memory fallback")
+
     def _hash_key(self, content: str, model: str) -> str:
-        return hashlib.md5(f"{model}:{content[:1000]}".encode()).hexdigest()
-    
-    def get(self, content: str, model: str) -> Optional[str]:
+        h = hashlib.md5(f"{model}:{content[:1000]}".encode()).hexdigest()
+        return f"prompt_cache:{h}"
+
+    async def get(self, content: str, model: str) -> Optional[str]:
         key = self._hash_key(content, model)
-        if key in self.cache:
-            entry = self.cache[key]
+        if self._redis:
+            try:
+                return await self._redis.get(key)
+            except Exception as e:
+                print(f"Redis get failed: {e}")
+        # Fallback to local dict
+        entry = self._local.get(key)
+        if entry:
             if datetime.now() < entry["expires"]:
                 return entry["cache_name"]
-            del self.cache[key]
+            del self._local[key]
         return None
-    
-    def set(self, content: str, model: str, cache_name: str):
+
+    async def set(self, content: str, model: str, cache_name: str):
         key = self._hash_key(content, model)
-        self.cache[key] = {
+        if self._redis:
+            try:
+                await self._redis.set(key, cache_name, ex=self.ttl_seconds)
+                return
+            except Exception as e:
+                print(f"Redis set failed: {e}")
+        # Fallback to local dict
+        self._local[key] = {
             "cache_name": cache_name,
-            "expires": datetime.now() + self.ttl
+            "expires": datetime.now() + timedelta(seconds=self.ttl_seconds)
         }
-    
+
     def cleanup(self):
+        """Clean expired entries from local fallback cache (Redis handles TTL natively)."""
         now = datetime.now()
-        expired = [k for k, v in self.cache.items() if now >= v["expires"]]
+        expired = [k for k, v in self._local.items() if now >= v["expires"]]
         for k in expired:
-            del self.cache[k]
+            del self._local[k]
 
 class GeminiService:
     def __init__(self):
-        self.default_api_key = os.getenv("GEMINI_API_KEY")
-        self.base_url = "https://generativelanguage.googleapis.com/v1beta"
-        self.enabled = bool(self.default_api_key)
+        # Gemini
+        self.gemini_api_key = os.getenv("GEMINI_API_KEY")
+        self.gemini_base_url = "https://generativelanguage.googleapis.com/v1beta"
+        
+        # Claude (fallback)
+        self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+        self.anthropic_base_url = "https://api.anthropic.com/v1"
+        
+        # OpenAI (secondary fallback)
+        self.openai_api_key = os.getenv("OPENAI_API_KEY")
+        self.openai_base_url = "https://api.openai.com/v1"
+        
+        self.enabled = bool(self.gemini_api_key or self.anthropic_api_key or self.openai_api_key)
         self.prompt_cache = PromptCache(ttl_minutes=30)
         
-        if not self.enabled:
-            print("Warning: GEMINI_API_KEY not set. AI features disabled.")
+        # Log available providers
+        providers = []
+        if self.gemini_api_key: providers.append("Gemini")
+        if self.anthropic_api_key: providers.append("Claude")
+        if self.openai_api_key: providers.append("OpenAI")
+        
+        if providers:
+            print(f"AI providers available: {', '.join(providers)}")
+        else:
+            print("Warning: No AI API keys set. AI features disabled.")
     
-    def get_api_key(self, custom_key: Optional[str] = None) -> Optional[str]:
+    def get_api_key(self, custom_key: Optional[str] = None, provider: str = "gemini") -> Optional[str]:
         if custom_key and custom_key.strip():
             return custom_key.strip()
-        return self.default_api_key
+        if provider == "claude":
+            return self.anthropic_api_key
+        if provider == "openai":
+            return self.openai_api_key
+        return self.gemini_api_key
     
     async def _create_cached_content(
         self, 
@@ -106,12 +170,12 @@ class GeminiService:
         if len(content) < 2000:
             return None
         
-        # Check local cache first
-        cached = self.prompt_cache.get(content, model)
+        # Check cache first
+        cached = await self.prompt_cache.get(content, model)
         if cached:
             return cached
         
-        url = f"{self.base_url}/cachedContents?key={api_key}"
+        url = f"{self.gemini_base_url}/cachedContents?key={api_key}"
         
         payload = {
             "model": f"models/{model}",
@@ -127,7 +191,7 @@ class GeminiService:
                     result = response.json()
                     cache_name = result.get("name")
                     if cache_name:
-                        self.prompt_cache.set(content, model, cache_name)
+                        await self.prompt_cache.set(content, model, cache_name)
                         return cache_name
         except Exception as e:
             print(f"Cache creation failed: {e}")
@@ -149,7 +213,7 @@ class GeminiService:
             parts.append({"inline_data": {"mime_type": mime_type, "data": data}})
         return parts
     
-    async def _call_api(
+    async def _call_gemini_api(
         self,
         model: str,
         prompt: str,
@@ -160,11 +224,11 @@ class GeminiService:
         response_schema: Optional[Dict] = None,
         cached_content: Optional[str] = None
     ) -> Tuple[str, int]:
-        key = self.get_api_key(api_key)
+        key = self.get_api_key(api_key, "gemini")
         if not key:
             return self._dev_response(prompt), 0
 
-        url = f"{self.base_url}/models/{model}:generateContent?key={key}"
+        url = f"{self.gemini_base_url}/models/{model}:generateContent?key={key}"
 
         # Build parts
         parts = self._build_image_parts(images)
@@ -183,7 +247,14 @@ class GeminiService:
 
         payload: Dict[str, Any] = {
             "contents": [{"parts": parts}],
-            "generationConfig": gen_config
+            "generationConfig": gen_config,
+            # Relaxed safety settings - let content through for formatting tasks
+            "safetySettings": [
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            ]
         }
 
         # Use cached content if available
@@ -200,8 +271,20 @@ class GeminiService:
 
             try:
                 candidate = result["candidates"][0]
-                text = candidate["content"]["parts"][0]["text"]
                 finish_reason = candidate.get("finishReason", "")
+                content = candidate.get("content", {})
+                
+                # Handle blocked/empty responses - raise specific error for fallback handling
+                if not content or "parts" not in content:
+                    blocked_reasons = {
+                        "RECITATION": "Detected potential copyrighted content",
+                        "SAFETY": "Content filtered by safety settings",
+                        "OTHER": "Content blocked by filter",
+                    }
+                    msg = blocked_reasons.get(finish_reason, f"Empty response (finishReason: {finish_reason})")
+                    raise ContentBlockedError(msg, reason=finish_reason)
+                
+                text = content["parts"][0]["text"]
 
                 # Track cached vs non-cached tokens
                 usage = result.get("usageMetadata", {})
@@ -219,10 +302,202 @@ class GeminiService:
                     )
 
                 return text, tokens
-            except TokenLimitError:
+            except (TokenLimitError, ContentBlockedError):
                 raise
-            except (KeyError, IndexError):
-                raise Exception(f"Failed to parse response: {result}")
+            except Exception as e:
+                raise Exception(f"Failed to parse Gemini response: {result}")
+
+    async def _call_claude_api(
+        self,
+        model: str,
+        prompt: str,
+        temperature: float = 0.2,
+        max_tokens: int = 2048,
+        api_key: Optional[str] = None,
+        images: Optional[List[str]] = None,
+        response_schema: Optional[Dict] = None
+    ) -> Tuple[str, int]:
+        key = self.get_api_key(api_key, "claude")
+        if not key:
+            raise Exception("Claude API key not configured")
+
+        url = f"{self.anthropic_base_url}/messages"
+        
+        # Build content parts
+        content = []
+        if images:
+            for img_data in images:
+                if img_data.startswith('data:'):
+                    header, data = img_data.split(',', 1)
+                    media_type = header.split(':')[1].split(';')[0]
+                else:
+                    data = img_data
+                    media_type = 'image/jpeg'
+                content.append({
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": media_type, "data": data}
+                })
+        
+        # Add JSON instruction if schema provided
+        if response_schema:
+            prompt = f"{prompt}\n\nRespond with valid JSON matching this schema: {json.dumps(response_schema)}"
+        
+        content.append({"type": "text", "text": prompt})
+
+        payload = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "messages": [{"role": "user", "content": content}],
+            "temperature": temperature
+        }
+
+        headers = {
+            "x-api-key": key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json"
+        }
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, json=payload, headers=headers, timeout=120.0)
+
+            if response.status_code != 200:
+                raise Exception(f"Claude API Error: {response.status_code} - {response.text}")
+
+            result = response.json()
+            
+            text = result["content"][0]["text"]
+            usage = result.get("usage", {})
+            tokens = usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
+            
+            stop_reason = result.get("stop_reason", "")
+            if stop_reason == "max_tokens":
+                raise TokenLimitError(
+                    f"Response truncated at {tokens} tokens",
+                    partial_text=text,
+                    tokens=tokens
+                )
+            
+            return text, tokens
+
+    async def _call_openai_api(
+        self,
+        model: str,
+        prompt: str,
+        temperature: float = 0.2,
+        max_tokens: int = 2048,
+        api_key: Optional[str] = None,
+        images: Optional[List[str]] = None,
+        response_schema: Optional[Dict] = None
+    ) -> Tuple[str, int]:
+        key = self.get_api_key(api_key, "openai")
+        if not key:
+            raise Exception("OpenAI API key not configured")
+
+        url = f"{self.openai_base_url}/chat/completions"
+        
+        # Build content
+        content = []
+        if images:
+            for img_data in images:
+                if not img_data.startswith('data:'):
+                    img_data = f"data:image/jpeg;base64,{img_data}"
+                content.append({"type": "image_url", "image_url": {"url": img_data}})
+        
+        content.append({"type": "text", "text": prompt})
+
+        payload: Dict[str, Any] = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "messages": [{"role": "user", "content": content}],
+            "temperature": temperature
+        }
+        
+        # Add JSON mode if schema provided
+        if response_schema:
+            payload["response_format"] = {"type": "json_object"}
+
+        headers = {
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json"
+        }
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, json=payload, headers=headers, timeout=120.0)
+
+            if response.status_code != 200:
+                raise Exception(f"OpenAI API Error: {response.status_code} - {response.text}")
+
+            result = response.json()
+            
+            choice = result["choices"][0]
+            text = choice["message"]["content"]
+            usage = result.get("usage", {})
+            tokens = usage.get("total_tokens", 0)
+            
+            if choice.get("finish_reason") == "length":
+                raise TokenLimitError(
+                    f"Response truncated at {tokens} tokens",
+                    partial_text=text,
+                    tokens=tokens
+                )
+            
+            return text, tokens
+
+    async def _call_api(
+        self,
+        model: str,
+        prompt: str,
+        temperature: float = 0.2,
+        max_tokens: int = 2048,
+        api_key: Optional[str] = None,
+        images: Optional[List[str]] = None,
+        response_schema: Optional[Dict] = None,
+        cached_content: Optional[str] = None,
+        allow_fallback: bool = True
+    ) -> Tuple[str, int]:
+        """
+        Unified API call with automatic fallback on content blocks.
+        Tries Gemini first, falls back to Claude, then OpenAI if blocked.
+        """
+        # Try Gemini first if available
+        if self.gemini_api_key:
+            try:
+                return await self._call_gemini_api(
+                    model, prompt, temperature, max_tokens,
+                    api_key, images, response_schema, cached_content
+                )
+            except ContentBlockedError as e:
+                if not allow_fallback:
+                    raise
+                print(f"Gemini blocked ({e.reason}), trying fallback provider...")
+            except Exception as e:
+                if not allow_fallback or "API Error" not in str(e):
+                    raise
+                print(f"Gemini error: {e}, trying fallback...")
+        
+        # Fallback to Claude
+        if self.anthropic_api_key:
+            try:
+                claude_model = CLAUDE_HAIKU if "flash" in model.lower() else CLAUDE_SONNET
+                return await self._call_claude_api(
+                    claude_model, prompt, temperature, max_tokens,
+                    None, images, response_schema
+                )
+            except Exception as e:
+                if not allow_fallback:
+                    raise
+                print(f"Claude error: {e}, trying OpenAI...")
+        
+        # Fallback to OpenAI
+        if self.openai_api_key:
+            openai_model = OPENAI_GPT4_MINI if "flash" in model.lower() else OPENAI_GPT4
+            return await self._call_openai_api(
+                openai_model, prompt, temperature, max_tokens,
+                None, images, response_schema
+            )
+        
+        # No providers available - dev mode
+        return self._dev_response(prompt), 0
     
     def _dev_response(self, prompt: str) -> str:
         if "autocomplete" in prompt.lower():
@@ -259,9 +534,9 @@ Sample content.
         return text.strip(), tokens
     
     async def generate_document(
-        self, 
-        content: str, 
-        theme: str, 
+        self,
+        content: str,
+        theme: str,
         custom_theme: Optional[str] = None,
         api_key: Optional[str] = None,
         custom_prompt: Optional[str] = None,
@@ -269,24 +544,88 @@ Sample content.
         images: Optional[List[str]] = None
     ) -> Tuple[str, int]:
         theme_desc = custom_theme if theme == "custom" else self._get_theme_description(theme)
-        
+
         # Truncate content if too long
         content = content[:8000] if len(content) > 8000 else content
-        
-        prompt = f"""Convert to LaTeX ({theme_desc}).
 
-Content:
+        initial_prompt = f"""Transform and convert the following content into a LaTeX document ({theme_desc}).
+
+IMPORTANT: You are reformatting and structuring user-provided content into LaTeX format.
+The user owns this content and is authorized to convert it. Focus on document structure and LaTeX markup.
+
+Content to transform:
 {content}
 
-{f'Instructions: {custom_prompt}' if custom_prompt else ''}
+{f'Additional instructions: {custom_prompt}' if custom_prompt else ''}
 {f'Preamble to include: {custom_preamble}' if custom_preamble else ''}
 {'Reference images provided - incorporate visual content.' if images else ''}
 
-Output complete compilable LaTeX only:"""
+Output COMPLETE compilable LaTeX. You MUST include \\end{{document}} at the end:"""
 
-        return await self._call_api(PRO_MODEL, prompt, temperature=0.2, max_tokens=4096, api_key=api_key, images=images)
-    
-    async def chat(self, message: str, context: str, 
+        accumulated = ""
+        total_tokens = 0
+        max_iterations = 6
+
+        for iteration in range(max_iterations):
+            try:
+                if iteration == 0:
+                    current_prompt = initial_prompt
+                    current_images = images
+                else:
+                    tail = accumulated[-800:]
+                    current_prompt = (
+                        f"Continue the LaTeX document from exactly where it was cut off.\n\n"
+                        f"The document so far ends with:\n{tail}\n\n"
+                        f"Output ONLY the continuation starting from where it ends. "
+                        f"Do NOT repeat any content. Continue until \\end{{document}}:"
+                    )
+                    current_images = None
+
+                text, tokens = await self._call_api(
+                    PRO_MODEL, current_prompt,
+                    temperature=0.1 if iteration > 0 else 0.2,
+                    max_tokens=4096,
+                    api_key=api_key,
+                    images=current_images
+                )
+
+                chunk = self._strip_code_fences(text) if iteration == 0 else self._deduplicate_continuation(accumulated, text)
+                accumulated += chunk
+                total_tokens += tokens
+                print(f"generate_document iteration {iteration + 1}: {tokens} tokens, complete={r'\\end{document}' in accumulated}")
+
+                if r"\end{document}" in accumulated:
+                    break
+
+            except TokenLimitError as e:
+                chunk = self._strip_code_fences(e.partial_text) if iteration == 0 else self._deduplicate_continuation(accumulated, e.partial_text)
+                accumulated += chunk
+                total_tokens += e.tokens
+                print(f"generate_document iteration {iteration + 1} truncated at {e.tokens} tokens, continuing...")
+
+                if r"\end{document}" in accumulated:
+                    break
+                # loop continues to next iteration
+
+        if r"\end{document}" not in accumulated:
+            # Ensure document is closed even if we ran out of iterations
+            accumulated = accumulated.rstrip() + "\n\\end{document}\n"
+
+        return accumulated, total_tokens
+
+    def _deduplicate_continuation(self, accumulated: str, new_chunk: str) -> str:
+        """Remove overlapping prefix from new_chunk that already exists at the end of accumulated."""
+        new_chunk = self._strip_code_fences(new_chunk)
+        if not accumulated or not new_chunk:
+            return new_chunk
+        # Check for overlap of decreasing lengths (up to 300 chars)
+        check_len = min(300, len(accumulated), len(new_chunk))
+        for length in range(check_len, 20, -1):
+            if new_chunk.startswith(accumulated[-length:]):
+                return new_chunk[length:]
+        return new_chunk
+
+    async def chat(self, message: str, context: str,
                   model: str = "flash", api_key: Optional[str] = None) -> Tuple[str, int]:
         model_name = FLASH_MODEL if model == "flash" else PRO_MODEL
         key = self.get_api_key(api_key)
@@ -403,8 +742,14 @@ Output complete compilable LaTeX only:"""
         if len(numbered_doc) > 12000:
             numbered_doc = numbered_doc[:12000] + "\n... (truncated)"
 
-        # Operation-based prompt - saves tokens by not repeating content
-        prompt = f"""You are a LaTeX editor. Edit the document using OPERATIONS (not full text).
+        # Operation-based prompt - emphasizes transformation, not reproduction
+        prompt = f"""You are a LaTeX formatting assistant. Your task is to TRANSFORM and apply LaTeX markup to user-provided content.
+
+IMPORTANT: You are reformatting and restructuring - NOT reproducing content. Focus ONLY on:
+- Adding LaTeX commands and environments
+- Fixing document structure
+- Applying formatting markup
+The user owns this content and has authorized these formatting changes.
 
 DOCUMENT (with line numbers):
 {numbered_doc}
@@ -657,7 +1002,10 @@ Respond with JSON containing explanation and operations array."""
 
         numbered_chunk = '\n'.join(view_lines)
 
-        prompt = f"""You are a LaTeX editor. Edit ONLY the lines marked with >>> (lines {start_line}-{chunk['end_line']}).
+        prompt = f"""You are a LaTeX formatting assistant. TRANSFORM and apply LaTeX markup to the marked lines.
+
+IMPORTANT: You are reformatting - NOT reproducing content. Focus on adding LaTeX commands/environments.
+The user owns this content and has authorized these formatting changes.
 
 DOCUMENT CHUNK (>>> marks editable lines):
 {numbered_chunk}
@@ -780,9 +1128,17 @@ JSON with explanation and operations:"""
             "changes": processed
         }, total_tokens
 
+    def _strip_code_fences(self, text: str) -> str:
+        """Remove markdown code fences from AI output (e.g. ```latex ... ```)."""
+        text = text.strip()
+        text = re.sub(r'^```[a-zA-Z]*\n?', '', text)
+        text = re.sub(r'\n?```$', '', text)
+        return text.strip()
+
     async def improve_content(self, content: str) -> Tuple[str, int]:
         prompt = f"Improve this LaTeX:\n{content[:3000]}\n\nOutput improved LaTeX only:"
-        return await self._call_api(PRO_MODEL, prompt, temperature=0.2, max_tokens=4096)
+        text, tokens = await self._call_api(PRO_MODEL, prompt, temperature=0.2, max_tokens=4096)
+        return self._strip_code_fences(text), tokens
     
     def _get_theme_description(self, theme: str) -> str:
         themes = {

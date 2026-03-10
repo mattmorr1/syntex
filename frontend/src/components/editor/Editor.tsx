@@ -73,6 +73,7 @@ export function Editor() {
     setCompiling,
     setCompileError,
     setUnsavedChanges,
+    setUpdatedAt,
     addFile,
   } = useEditorStore();
 
@@ -90,6 +91,9 @@ export function Editor() {
   const [titleValue, setTitleValue] = useState('');
   const titleInputRef = useRef<HTMLInputElement>(null);
   const pdfViewerRef = useRef<import('./PdfViewer').PdfViewerHandle>(null);
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const currentProjectRef = useRef(currentProject);
+  currentProjectRef.current = currentProject;
 
   useEffect(() => {
     if (projectId) {
@@ -128,15 +132,16 @@ export function Editor() {
 
   const handleSave = useCallback(async () => {
     if (!currentProject) return;
-    
+
     try {
-      await api.saveProject(currentProject.id, currentProject.files);
+      const result = await api.saveProject(currentProject.id, currentProject.files);
       setUnsavedChanges(false);
+      if (result?.updated_at) setUpdatedAt(result.updated_at);
       setSnackbar({ open: true, message: 'Saved', severity: 'success' });
     } catch (err: any) {
       setSnackbar({ open: true, message: err.message, severity: 'error' });
     }
-  }, [currentProject, setUnsavedChanges]);
+  }, [currentProject, setUnsavedChanges, setUpdatedAt]);
 
   const handleCompile = useCallback(async () => {
     if (!currentProject) return;
@@ -221,10 +226,32 @@ export function Editor() {
         handleCompile();
       }
     };
-    
+
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [handleSave, handleCompile]);
+
+  // Auto-save: 3 seconds after the last content change
+  useEffect(() => {
+    if (!unsavedChanges) return;
+
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    autoSaveTimerRef.current = setTimeout(async () => {
+      const proj = currentProjectRef.current;
+      if (!proj) return;
+      try {
+        const result = await api.saveProject(proj.id, proj.files);
+        setUnsavedChanges(false);
+        if (result?.updated_at) setUpdatedAt(result.updated_at);
+      } catch {
+        // Silently fail auto-save; user can retry manually
+      }
+    }, 3000);
+
+    return () => {
+      if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    };
+  }, [activeFileContent, unsavedChanges]);
 
   if (loading) {
     return (
