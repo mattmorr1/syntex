@@ -1,6 +1,15 @@
 to do:
-- redo ux?
+- fix login issues (repeat sign in sso)
+- make the generation process faster/seem more seamless
+- token cap
+    - monetization
+- customization with invites
+- promote people to admin?
+- optimize output for UEA
+- batching/agentic until full output generated (rn token cap)
+- write readme, create notion app for explain use case (or site?)
+- cost model
+1.1 ux? 
 
-- failing at big tasks
 
-gcloud builds submit --config=config/cloudbuild.yaml
+deploy: gcloud builds submit --config=config/cloudbuild.yaml

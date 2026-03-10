@@ -62,16 +62,16 @@ export const api = {
     request<any>('/projects', { method: 'POST', body: JSON.stringify(data) }),
   
   saveProject: (id: string, files: any[]) =>
-    request<any>(`/save-project`, {
+    request<any>(`/projects/save-project`, {
       method: 'POST',
       body: JSON.stringify({ project_id: id, files }),
     }),
-  
+
   deleteProject: (id: string) =>
-    request<void>(`/delete-project/${id}`, { method: 'DELETE' }),
-  
+    request<void>(`/projects/delete-project/${id}`, { method: 'DELETE' }),
+
   duplicateProject: (id: string) =>
-    request<any>(`/duplicate-project/${id}`, { method: 'POST' }),
+    request<any>(`/projects/duplicate-project/${id}`, { method: 'POST' }),
   
   renameProject: (id: string, name: string) =>
     request<{ message: string; name: string }>(`/projects/${id}/rename`, {

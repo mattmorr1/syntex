@@ -33,6 +33,7 @@ interface EditorState {
   setCompiling: (isCompiling: boolean) => void;
   setCompileError: (error: string | null) => void;
   setUnsavedChanges: (unsaved: boolean) => void;
+  setUpdatedAt: (updatedAt: string) => void;
   addFile: (file: ProjectFile) => void;
   removeFile: (fileName: string) => void;
 }
@@ -75,7 +76,12 @@ export const useEditorStore = create<EditorState>((set) => ({
   setCompiling: (isCompiling) => set({ isCompiling }),
   setCompileError: (error) => set({ compileError: error }),
   setUnsavedChanges: (unsaved) => set({ unsavedChanges: unsaved }),
-  
+
+  setUpdatedAt: (updatedAt) => set((state) => {
+    if (!state.currentProject) return state;
+    return { currentProject: { ...state.currentProject, updatedAt } };
+  }),
+
   addFile: (file) => set((state) => {
     if (!state.currentProject) return state;
     return {

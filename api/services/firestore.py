@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
 import firebase_admin
 from firebase_admin import credentials, firestore, auth
@@ -45,8 +45,8 @@ class FirestoreService:
             "email": email,
             "username": username,
             "role": role,
-            "created_at": datetime.utcnow(),
-            "last_accessed": datetime.utcnow(),
+            "created_at": datetime.now(timezone.utc),
+            "last_accessed": datetime.now(timezone.utc),
             "tokens_used": {"total": 0, "flash": 0, "pro": 0}
         }
         
@@ -87,7 +87,7 @@ class FirestoreService:
                 "tokens_used.flash": firestore.Increment(flash_tokens),
                 "tokens_used.pro": firestore.Increment(pro_tokens),
                 "tokens_used.total": firestore.Increment(flash_tokens + pro_tokens),
-                "last_accessed": datetime.utcnow()
+                "last_accessed": datetime.now(timezone.utc)
             })
         else:
             if uid in self._dev_data["users"]:
@@ -99,17 +99,17 @@ class FirestoreService:
     async def update_last_accessed(self, uid: str):
         if self.enabled:
             self.db.collection("users").document(uid).update({
-                "last_accessed": datetime.utcnow()
+                "last_accessed": datetime.now(timezone.utc)
             })
         elif uid in self._dev_data["users"]:
-            self._dev_data["users"][uid]["last_accessed"] = datetime.utcnow()
+            self._dev_data["users"][uid]["last_accessed"] = datetime.now(timezone.utc)
     
     async def update_user_settings(self, uid: str, settings: Dict) -> bool:
         """Update user settings like custom API key."""
         if self.enabled:
             self.db.collection("users").document(uid).update({
                 "settings": settings,
-                "last_accessed": datetime.utcnow()
+                "last_accessed": datetime.now(timezone.utc)
             })
             return True
         elif uid in self._dev_data["users"]:
@@ -164,8 +164,8 @@ class FirestoreService:
             "custom_theme": custom_theme,
             "files": files,
             "main_file": main_file,
-            "created_at": datetime.utcnow(),
-            "updated_at": datetime.utcnow()
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc)
         }
         
         if self.enabled:
@@ -206,11 +206,11 @@ class FirestoreService:
         if self.enabled:
             self.db.collection("projects").document(project_id).update({
                 "files": files,
-                "updated_at": datetime.utcnow()
+                "updated_at": datetime.now(timezone.utc)
             })
         else:
             self._dev_data["projects"][project_id]["files"] = files
-            self._dev_data["projects"][project_id]["updated_at"] = datetime.utcnow()
+            self._dev_data["projects"][project_id]["updated_at"] = datetime.now(timezone.utc)
         return True
     
     async def update_project_name(self, project_id: str, uid: str, name: str) -> bool:
@@ -221,11 +221,11 @@ class FirestoreService:
         if self.enabled:
             self.db.collection("projects").document(project_id).update({
                 "name": name,
-                "updated_at": datetime.utcnow()
+                "updated_at": datetime.now(timezone.utc)
             })
         else:
             self._dev_data["projects"][project_id]["name"] = name
-            self._dev_data["projects"][project_id]["updated_at"] = datetime.utcnow()
+            self._dev_data["projects"][project_id]["updated_at"] = datetime.now(timezone.utc)
         return True
     
     async def delete_project(self, project_id: str, uid: str) -> bool:
@@ -260,7 +260,7 @@ class FirestoreService:
         chat_data = {
             "uid": uid,
             "project_id": project_id,
-            "datetime": datetime.utcnow(),
+            "datetime": datetime.now(timezone.utc),
             "messages": messages
         }
         
@@ -293,7 +293,7 @@ class FirestoreService:
             
             total_tokens = 0
             active_today = 0
-            today = datetime.utcnow().date()
+            today = datetime.now(timezone.utc).date()
             
             for doc in users:
                 data = doc.to_dict()
@@ -325,7 +325,7 @@ class FirestoreService:
         feedback_data = {
             "feedback": feedback,
             "uid": uid,
-            "timestamp": datetime.utcnow()
+            "timestamp": datetime.now(timezone.utc)
         }
         
         if self.enabled:
@@ -341,7 +341,7 @@ class FirestoreService:
         invite_data = {
             "code": code,
             "created_by": created_by,
-            "created_at": datetime.utcnow(),
+            "created_at": datetime.now(timezone.utc),
             "max_uses": uses,
             "used_count": 0,
             "used_by": [],

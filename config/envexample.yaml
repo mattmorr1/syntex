@@ -16,8 +16,8 @@ VITE_FIREBASE_APP_ID: "1:123456789:web:abc123"
 
 # Gemini AI
 GEMINI_API_KEY: "your-gemini-api-key"
-GEMINI_FLASH_MODEL: "gemini-2.0-flash"
-GEMINI_PRO_MODEL: "gemini-1.5-pro"
+GEMINI_FLASH_MODEL: "gemini-3.0-flash-preview"
+GEMINI_PRO_MODEL: "gemini-3.1-pro-preview"
 
 # LaTeX
 LATEX_COMPILER: "pdflatex"

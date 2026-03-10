@@ -1,4 +1,16 @@
 services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
   uea:
     build:
       context: ..
@@ -10,30 +22,36 @@ services:
       - HOST=0.0.0.0
       - PORT=8000
       - DEBUG=False
-      
+
       # Firebase
       - FIREBASE_KEY_PATH=firebase-key.json
-      
+
       # Gemini AI
       - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - GEMINI_FLASH_MODEL=gemini-2.0-flash
-      - GEMINI_PRO_MODEL=gemini-1.5-pro
-      
+      - GEMINI_FLASH_MODEL=gemini-3.0-flash-preview
+      - GEMINI_PRO_MODEL=gemini-3.1-pro-preview
+
       # LaTeX
       - LATEX_COMPILER=pdflatex
       - LATEX_TIMEOUT=60
-      
+
       # Admin
       - ADMIN_EMAIL=mmorristwo@gmail.com
       - ADMIN_USERNAME=matt
       - ADMIN_PASSWORD=password
-      
+
       # Security
       - ACCESS_TOKEN_EXPIRE_MINUTES=60
       - MAX_FILE_SIZE=10485760
+
+      # Cache
+      - REDIS_URL=redis://redis:6379
     volumes:
       - ../firebase-key.json:/app/firebase-key.json:ro
       - uea-tmp:/app/tmp
+    depends_on:
+      redis:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -59,6 +77,7 @@ services:
 
 volumes:
   uea-tmp:
+  redis-data:
 
 networks:
   default:

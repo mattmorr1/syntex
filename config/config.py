@@ -9,14 +9,14 @@ class Config:
     
     # Gemini AI Configuration
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-    GEMINI_FLASH_MODEL = os.getenv("GEMINI_FLASH_MODEL", "gemini-2.0-flash")
-    GEMINI_PRO_MODEL = os.getenv("GEMINI_PRO_MODEL", "gemini-1.5-pro")
+    GEMINI_FLASH_MODEL = os.getenv("GEMINI_FLASH_MODEL", "gemini-3.0-flash-preview")
+    GEMINI_PRO_MODEL = os.getenv("GEMINI_PRO_MODEL", "gemini-3.1-pro-preview")
     
     # Legacy GCP (for Vertex AI if needed)
     GCP_PROJECT_ID = os.getenv("GCP_PROJECT_ID", "")
     GCP_BUCKET_NAME = os.getenv("GCP_BUCKET_NAME", "")
     GCP_REGION = os.getenv("GCP_REGION", "us-central1")
-    GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-pro")
+    GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-pro-preview")
     
     # LaTeX Configuration
     LATEX_COMPILER = os.getenv("LATEX_COMPILER", "pdflatex")
