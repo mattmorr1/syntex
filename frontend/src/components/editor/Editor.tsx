@@ -103,11 +103,11 @@ export function Editor() {
   const [editorSelection, setEditorSelection] = useState<EditorSelection | null>(null);
 
   const isDark = mode === 'dark';
-  const purpleBorder = isDark ? '#4c1d95' : '#ddd6fe';
-  const accentBorder = isDark ? '#3f3f46' : '#e4e4e7';
-  const surfaceBg = isDark ? '#18181b' : '#ffffff';
-  const surfaceActive = isDark ? '#27272a' : '#f4f4f5';
-  const editorBg = isDark ? '#0e0e11' : '#fafafa';
+  const purpleBorder = isDark ? '#262626' : '#e4e4e7';
+  const accentBorder = isDark ? '#2d2d2d' : '#e4e4e7';
+  const surfaceBg = isDark ? '#121212' : '#ffffff';
+  const surfaceActive = isDark ? '#1e1e1e' : '#f4f4f5';
+  const editorBg = isDark ? '#0a0a0a' : '#fafafa';
   const pdfBg = isDark ? '#525659' : '#e4e4e7';
 
   useEffect(() => {
@@ -276,9 +276,9 @@ export function Editor() {
     <PanelResizeHandle style={{ width: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'col-resize' }}>
       <Box sx={{
         width: 3, height: 32, borderRadius: 2,
-        bgcolor: `${purpleBorder}80`,
+        bgcolor: 'rgba(255,255,255,0.08)',
         transition: 'background 0.15s',
-        '&:hover': { bgcolor: 'primary.main' },
+        '&:hover': { bgcolor: 'rgba(255,255,255,0.3)' },
       }} />
     </PanelResizeHandle>
   );
@@ -594,7 +594,7 @@ export function Editor() {
                         '&:hover': { bgcolor: surfaceActive },
                       }}
                     >
-                      <span className="material-symbols-outlined" style={{ fontSize: 14, color: activeFile === file.name ? '#7c3aed' : undefined }}>description</span>
+                      <span className="material-symbols-outlined" style={{ fontSize: 14, color: activeFile === file.name ? (isDark ? '#ffffff' : '#0a0a0a') : undefined }}>description</span>
                       {file.name}
                     </Box>
                   ))}

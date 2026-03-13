@@ -31,7 +31,7 @@ export function Layout({ children }: LayoutProps) {
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
 
   const isDark = mode === 'dark';
-  const purpleBorder = isDark ? '#4c1d95' : '#ddd6fe';
+  const borderColor = isDark ? '#262626' : '#e4e4e7';
 
   const handleMenu = (event: React.MouseEvent<HTMLElement>) => {
     setAnchorEl(event.currentTarget);
@@ -49,7 +49,7 @@ export function Layout({ children }: LayoutProps) {
         alignItems: 'center',
         justifyContent: 'space-between',
         px: 2,
-        borderBottom: `1px solid ${purpleBorder}`,
+        borderBottom: `1px solid ${borderColor}`,
         flexShrink: 0,
       }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
@@ -76,7 +76,8 @@ export function Layout({ children }: LayoutProps) {
                   height: 24,
                   fontSize: 10,
                   fontWeight: 700,
-                  bgcolor: 'primary.main',
+                  bgcolor: isDark ? '#ffffff' : '#0a0a0a',
+                  color: isDark ? '#0a0a0a' : '#ffffff',
                 }}>
                   {user.username[0].toUpperCase()}
                 </Avatar>

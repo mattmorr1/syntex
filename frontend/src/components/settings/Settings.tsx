@@ -32,9 +32,9 @@ export function Settings() {
   const [resetMsg, setResetMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const isDark = mode === 'dark';
-  const purpleBorder = isDark ? '#4c1d95' : '#ddd6fe';
-  const accentBorder = isDark ? '#3f3f46' : '#e4e4e7';
-  const surfaceBg = isDark ? '#18181b' : '#ffffff';
+  const purpleBorder = isDark ? '#262626' : '#e4e4e7';
+  const accentBorder = isDark ? '#2d2d2d' : '#e4e4e7';
+  const surfaceBg = isDark ? '#121212' : '#ffffff';
 
   const handleResetPassword = async () => {
     if (!user?.email) return;

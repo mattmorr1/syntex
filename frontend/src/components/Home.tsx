@@ -58,10 +58,10 @@ export function Home() {
   const [menuAnchor, setMenuAnchor] = useState<{ el: HTMLElement; project: Project } | null>(null);
 
   const isDark = mode === 'dark';
-  const purpleBorder = isDark ? '#4c1d95' : '#ddd6fe';
-  const accentBorder = isDark ? '#3f3f46' : '#e4e4e7';
-  const hoverBg = isDark ? 'rgba(124, 58, 237, 0.06)' : 'rgba(109, 40, 217, 0.03)';
-  const surfaceBg = isDark ? '#18181b' : '#ffffff';
+  const purpleBorder = isDark ? '#262626' : '#e4e4e7';
+  const accentBorder = isDark ? '#2d2d2d' : '#e4e4e7';
+  const hoverBg = isDark ? 'rgba(255, 255, 255, 0.04)' : 'rgba(0, 0, 0, 0.03)';
+  const surfaceBg = isDark ? '#121212' : '#ffffff';
 
   useEffect(() => {
     loadProjects();
@@ -263,7 +263,7 @@ export function Home() {
               sx={{
                 width: 72,
                 height: 88,
-                border: `1px dashed ${dragActive ? '#7c3aed' : accentBorder}`,
+                border: `1px dashed ${dragActive ? '#ffffff' : accentBorder}`,
                 borderRadius: '8px',
                 display: 'flex',
                 flexDirection: 'column',

@@ -272,8 +272,8 @@ export function MonacoEditor({ value, onChange, fileName, projectId, onSelection
               'editor.foreground': '#d4d4d8',
               'editorLineNumber.foreground': '#52525b',
               'editorLineNumber.activeForeground': '#a1a1aa',
-              'editorCursor.foreground': '#7c3aed',
-              'editor.selectionBackground': '#7c3aed30',
+              'editorCursor.foreground': '#ffffff',
+              'editor.selectionBackground': '#ffffff25',
               'editor.lineHighlightBackground': '#18181b',
               'editorGutter.background': '#0e0e11',
               'editorWidget.background': '#18181b',
@@ -288,15 +288,15 @@ export function MonacoEditor({ value, onChange, fileName, projectId, onSelection
             base: 'vs',
             inherit: true,
             rules: [
-              { token: 'keyword.latex', foreground: '6d28d9' },
-              { token: 'command.latex', foreground: '7c3aed' },
+              { token: 'keyword.latex', foreground: '3f3f46' },
+              { token: 'command.latex', foreground: '0a0a0a' },
               { token: 'comment.latex', foreground: 'a1a1aa', fontStyle: 'italic' },
               { token: 'math.latex', foreground: 'b45309' },
             ],
             colors: {
               'editor.background': '#fafafa',
-              'editor.selectionBackground': '#6d28d920',
-              'editorCursor.foreground': '#6d28d9',
+              'editor.selectionBackground': '#0a0a0a20',
+              'editorCursor.foreground': '#0a0a0a',
             },
           });
         }}
