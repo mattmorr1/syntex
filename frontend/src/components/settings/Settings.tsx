@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import SyntexLogo from '../common/SyntexLogo';
 import {
   Box,
   Typography,
@@ -95,7 +96,7 @@ export function Settings() {
           </IconButton>
         </Tooltip>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-          <img src="/syntex.svg" alt="syntex" style={{ width: 18, height: 18 }} />
+          <SyntexLogo size="sm" />
           <Typography sx={{ fontWeight: 600, fontSize: 12 }}>syntex</Typography>
         </Box>
         <Box sx={{ width: 1, height: 16, bgcolor: accentBorder }} />

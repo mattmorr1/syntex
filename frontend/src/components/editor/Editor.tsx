@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import SyntexLogo from '../common/SyntexLogo';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Box,
@@ -297,7 +298,7 @@ export function Editor() {
       }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <img src="/syntex.svg" alt="syntex" style={{ width: 18, height: 18 }} />
+            <SyntexLogo size="sm" />
             <Typography sx={{ fontWeight: 600, fontSize: 12, letterSpacing: '-0.01em' }}>
               syntex
             </Typography>

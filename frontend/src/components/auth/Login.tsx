@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
+import SyntexLogo from '../common/SyntexLogo';
 import {
   Box,
   Card,
@@ -80,7 +81,7 @@ export function Login() {
       <Card sx={{ maxWidth: 400, width: '100%' }}>
         <CardContent sx={{ p: 4 }}>
           <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1, mb: 1 }}>
-            <img src="/syntex.svg" alt="syntex" style={{ width: 24, height: 24 }} />
+            <SyntexLogo size="md" />
             <Typography variant="h5" fontWeight={600}>
               syntex
             </Typography>

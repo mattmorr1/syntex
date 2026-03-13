@@ -1,5 +1,6 @@
 import { ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
+import SyntexLogo from './SyntexLogo';
 import {
   Box,
   IconButton,
@@ -52,7 +53,7 @@ export function Layout({ children }: LayoutProps) {
         flexShrink: 0,
       }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-          <img src="/syntex.svg" alt="syntex" style={{ width: 18, height: 18 }} />
+          <SyntexLogo size="sm" />
           <Typography sx={{ fontWeight: 600, fontSize: 12, letterSpacing: '-0.01em' }}>
             syntex
           </Typography>
