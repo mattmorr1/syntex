@@ -1,10 +1,13 @@
 import { Box, Typography } from '@mui/material';
+import { useThemeStore } from '../../store/themeStore';
 
 interface Props {
   size?: 'sm' | 'md';
 }
 
 export default function SyntexLogo({ size = 'sm' }: Props) {
+  const { mode } = useThemeStore();
+  const isDark = mode === 'dark';
   const dim = size === 'md' ? 26 : 20;
   const fontSize = size === 'md' ? 9 : 7.5;
 
@@ -13,7 +16,7 @@ export default function SyntexLogo({ size = 'sm' }: Props) {
       sx={{
         width: dim,
         height: dim,
-        bgcolor: 'white',
+        bgcolor: isDark ? '#ffffff' : '#0a0a0a',
         borderRadius: '5px',
         display: 'flex',
         alignItems: 'center',
@@ -23,7 +26,7 @@ export default function SyntexLogo({ size = 'sm' }: Props) {
     >
       <Typography
         sx={{
-          color: '#0a0a0a',
+          color: isDark ? '#0a0a0a' : '#ffffff',
           fontWeight: 700,
           fontSize,
           fontFamily: '"IBM Plex Mono", "Courier New", monospace',

@@ -57,9 +57,9 @@ export function AgentPanel({ projectId, document, selection, onApplyChanges }: A
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const isDark = mode === 'dark';
-  const purpleBorder = isDark ? '#4c1d95' : '#ddd6fe';
-  const accentBorder = isDark ? '#3f3f46' : '#e4e4e7';
-  const surfaceActive = isDark ? '#27272a' : '#f4f4f5';
+  const purpleBorder = isDark ? '#262626' : '#e4e4e7';
+  const accentBorder = isDark ? '#2d2d2d' : '#e4e4e7';
+  const surfaceActive = isDark ? '#1e1e1e' : '#f4f4f5';
 
   useEffect(() => {
     if (scrollRef.current && (explanation || changes.length > 0)) {
