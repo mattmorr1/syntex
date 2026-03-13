@@ -193,7 +193,7 @@ class GeminiService:
         response_schema: Optional[Dict] = None,
         cached_content: Optional[str] = None
     ) -> Tuple[str, int]:
-        key = self.get_api_key(api_key, "gemini")
+        key = self.get_api_key(api_key)
         if not key:
             return self._dev_response(prompt), 0
 

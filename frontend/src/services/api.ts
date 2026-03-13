@@ -1,4 +1,5 @@
 import { useAuthStore } from '../store/authStore';
+import { firebaseEnabled, getCurrentToken } from './firebase';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
@@ -6,8 +7,17 @@ async function request<T>(
   endpoint: string,
   options: RequestInit = {}
 ): Promise<T> {
-  const token = useAuthStore.getState().token;
-  
+  let token = useAuthStore.getState().token;
+
+  // Always get a fresh Firebase token — Firebase auto-refreshes if expired
+  if (firebaseEnabled) {
+    const freshToken = await getCurrentToken();
+    if (freshToken) {
+      token = freshToken;
+      useAuthStore.getState().setToken(freshToken);
+    }
+  }
+
   const headers: HeadersInit = {
     'Content-Type': 'application/json',
     ...(token && { Authorization: `Bearer ${token}` }),
