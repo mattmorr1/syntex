@@ -416,7 +416,8 @@ Output COMPLETE compilable LaTeX. You MUST include \\end{{document}} at the end:
                 chunk = self._strip_code_fences(text) if iteration == 0 else self._deduplicate_continuation(accumulated, text)
                 accumulated += chunk
                 total_tokens += tokens
-                print(f"generate_document iteration {iteration + 1}: {tokens} tokens, complete={r'\\end{document}' in accumulated}")
+                complete = r"\end{document}" in accumulated
+                print(f"generate_document iteration {iteration + 1}: {tokens} tokens, complete={complete}")
 
                 if r"\end{document}" in accumulated:
                     break
