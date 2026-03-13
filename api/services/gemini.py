@@ -1,11 +1,11 @@
 import os
-import json
-import httpx
-import hashlib
-import asyncio
 import re
-from typing import Tuple, List, Optional, Dict, Any
+import json
+import asyncio
+import hashlib
+import httpx
 from datetime import datetime, timedelta
+from typing import Tuple, List, Optional, Dict, Any
 from config import Config
 
 # Gemini models
@@ -126,15 +126,15 @@ class GeminiService:
         # Gemini
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
         self.gemini_base_url = "https://generativelanguage.googleapis.com/v1beta"
-        
+
         # Claude (fallback)
         self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
         self.anthropic_base_url = "https://api.anthropic.com/v1"
-        
+
         # OpenAI (secondary fallback)
         self.openai_api_key = os.getenv("OPENAI_API_KEY")
         self.openai_base_url = "https://api.openai.com/v1"
-        
+
         self.enabled = bool(self.gemini_api_key or self.anthropic_api_key or self.openai_api_key)
         self.prompt_cache = PromptCache(ttl_minutes=30)
         
@@ -157,11 +157,11 @@ class GeminiService:
         if provider == "openai":
             return self.openai_api_key
         return self.gemini_api_key
-    
+
     async def _create_cached_content(
-        self, 
-        content: str, 
-        model: str, 
+        self,
+        content: str,
+        model: str,
         api_key: str,
         display_name: str = "document_cache"
     ) -> Optional[str]:
@@ -169,21 +169,18 @@ class GeminiService:
         # Only cache if content is substantial (>2000 chars)
         if len(content) < 2000:
             return None
-        
+
         # Check cache first
         cached = await self.prompt_cache.get(content, model)
         if cached:
             return cached
-        
+
         url = f"{self.gemini_base_url}/cachedContents?key={api_key}"
-        
         payload = {
             "model": f"models/{model}",
-            "displayName": display_name,
-            "contents": [{"parts": [{"text": content}], "role": "user"}],
-            "ttl": "1800s"  # 30 minutes
+            "contents": [{"role": "user", "parts": [{"text": content}]}],
+            "displayName": display_name
         }
-        
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(url, json=payload, timeout=30.0)
@@ -263,18 +260,18 @@ class GeminiService:
 
         async with httpx.AsyncClient() as client:
             response = await client.post(url, json=payload, timeout=120.0)
-
+            
             if response.status_code != 200:
-                raise Exception(f"Gemini API Error: {response.status_code} - {response.text}")
-
+                err_msg = response.text[:500] if len(response.text) > 500 else response.text
+                raise Exception(f"Gemini API Error: {response.status_code} - {err_msg}")
+            
             result = response.json()
-
+            
             try:
                 candidate = result["candidates"][0]
                 finish_reason = candidate.get("finishReason", "")
-                content = candidate.get("content", {})
-                
                 # Handle blocked/empty responses - raise specific error for fallback handling
+                content = candidate.get("content", {})
                 if not content or "parts" not in content:
                     blocked_reasons = {
                         "RECITATION": "Detected potential copyrighted content",
@@ -283,8 +280,6 @@ class GeminiService:
                     }
                     msg = blocked_reasons.get(finish_reason, f"Empty response (finishReason: {finish_reason})")
                     raise ContentBlockedError(msg, reason=finish_reason)
-                
-                text = content["parts"][0]["text"]
 
                 # Track cached vs non-cached tokens
                 usage = result.get("usageMetadata", {})
@@ -292,15 +287,17 @@ class GeminiService:
                 cached_tokens = usage.get("cachedContentTokenCount", 0)
                 if cached_tokens > 0:
                     print(f"Used {cached_tokens} cached tokens out of {tokens} total")
-
-                # Check if response was truncated due to token limit
                 if finish_reason == "MAX_TOKENS":
-                    raise TokenLimitError(
-                        f"Response truncated at {tokens} tokens (max_output={max_tokens})",
-                        partial_text=text,
-                        tokens=tokens
-                    )
-
+                    raise Exception(f"Response exceeded token limit. Try using a shorter document or simpler instruction. Used {tokens} tokens.")
+                
+                # Check if content exists and has parts
+                content = candidate.get("content", {})
+                parts = content.get("parts", [])
+                
+                if not parts or not parts[0].get("text"):
+                    raise Exception(f"Empty response from API. Finish reason: {finish_reason}")
+                
+                text = parts[0]["text"]
                 return text, tokens
             except (TokenLimitError, ContentBlockedError):
                 raise
@@ -498,39 +495,68 @@ class GeminiService:
         
         # No providers available - dev mode
         return self._dev_response(prompt), 0
-    
+
     def _dev_response(self, prompt: str) -> str:
         if "autocomplete" in prompt.lower():
             return "\\section{"
         if "convert" in prompt.lower() or "latex" in prompt.lower():
             return self._sample_latex()
-        if "edit" in prompt.lower() or "operation" in prompt.lower():
+        if "edit" in prompt.lower() or "change" in prompt.lower():
             return json.dumps({
-                "explanation": "Dev mode: Sample edit using operations",
-                "operations": [
-                    {"type": "wrap", "line": 1, "start_char": 0, "end_char": -1, "wrapper": "\\textbf{$}", "reason": "Dev: make bold"}
-                ]
+                "explanation": "Dev mode: Sample edit suggestion",
+                "changes": [{
+                    "start_line": 1,
+                    "end_line": 2,
+                    "original": "Original text",
+                    "replacement": "Improved text",
+                    "reason": "Dev mode suggestion"
+                }]
             })
-        return "Development mode response."
+        return "This is a development mode response."
     
     def _sample_latex(self) -> str:
         return r"""\documentclass{article}
 \usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{geometry}
+
+\geometry{a4paper, margin=1in}
+
+\title{Sample Document}
+\author{UEA AI}
+\date{\today}
+
 \begin{document}
-\title{Sample}
 \maketitle
+
 \section{Introduction}
-Sample content.
+This is a sample LaTeX document generated for development purposes.
+
+\section{Content}
+Lorem ipsum dolor sit amet, consectetur adipiscing elit.
+
+\section{Conclusion}
+This document demonstrates the basic LaTeX structure.
+
 \end{document}"""
 
-    async def autocomplete(self, context: str, cursor_pos: int, file_name: str, 
-                          api_key: Optional[str] = None) -> Tuple[str, int]:
-        # Only send last 500 chars for context (token optimization)
-        ctx = context[max(0, cursor_pos-500):cursor_pos]
-        
-        prompt = f"LaTeX autocomplete. Context:\n{ctx}\n\nProvide 1 short completion (max 50 chars). Output ONLY the completion:"
-        
-        text, tokens = await self._call_api(FLASH_MODEL, prompt, temperature=0.1, max_tokens=50, api_key=api_key)
+    async def autocomplete(self, context: str, cursor_pos: int, file_name: str) -> Tuple[str, int]:
+        # Only use the last ~2000 chars of context to save tokens
+        trimmed_context = context[:cursor_pos]
+        if len(trimmed_context) > 2000:
+            trimmed_context = trimmed_context[-2000:]
+
+        prompt = f"""You are a LaTeX expert providing intelligent autocomplete.
+
+Context (code before cursor):
+{trimmed_context}
+
+File: {file_name}
+
+Provide a SINGLE short completion (1-2 lines max) that would logically follow.
+Return ONLY the completion text, nothing else. No explanations."""
+
+        text, tokens = await self._call_api(FLASH_MODEL, prompt, temperature=0.1, max_tokens=100)
         return text.strip(), tokens
     
     async def generate_document(
@@ -628,208 +654,95 @@ Output COMPLETE compilable LaTeX. You MUST include \\end{{document}} at the end:
     async def chat(self, message: str, context: str,
                   model: str = "flash", api_key: Optional[str] = None) -> Tuple[str, int]:
         model_name = FLASH_MODEL if model == "flash" else PRO_MODEL
-        key = self.get_api_key(api_key)
         
-        # Try to cache the document context for repeated chats
-        cached_content = None
-        if key and len(context) > 2000:
-            cached_content = await self._create_cached_content(
-                f"LaTeX document context:\n{context}",
-                model_name,
-                key,
-                "chat_context"
-            )
-        
-        if cached_content:
-            prompt = f"LaTeX assistant. Context is cached.\n\nUser: {message}\n\nBrief helpful response:"
-        else:
-            ctx = context[:1500] if len(context) > 1500 else context
-            prompt = f"LaTeX assistant. Doc context:\n{ctx}\n\nUser: {message}\n\nBrief helpful response:"
+        prompt = f"""You are a LaTeX expert assistant.
 
-        return await self._call_api(
-            model_name, 
-            prompt, 
-            temperature=0.3, 
-            max_tokens=800, 
-            api_key=api_key,
-            cached_content=cached_content
-        )
+Document context:
+{context[:2000]}
+
+User message: {message}
+
+Provide helpful, concise assistance. If suggesting code changes, show the LaTeX code clearly."""
+
+        return await self._call_api(model_name, prompt, temperature=0.3, max_tokens=1024)
     
-    def _try_repair_json(self, text: str) -> Optional[Dict]:
-        """Attempt to repair truncated JSON from a cut-off response."""
-        text = text.strip()
-        if not text:
-            return None
-
-        # Try parsing as-is first
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            pass
-
-        # Try closing truncated JSON structures
-        # Common case: operations array was cut mid-object
-        repairs = [
-            text + '}]}',       # close object + array + root
-            text + ']}',        # close array + root
-            text + '}',         # close root object
-            text + '"]]}',      # close string + array + root
-            text + '"}]}',      # close string value + object + array + root
-        ]
-
-        for attempt in repairs:
-            try:
-                result = json.loads(attempt)
-                if isinstance(result, dict) and "operations" in result:
-                    return result
-            except json.JSONDecodeError:
-                continue
-
-        # Try extracting valid operations up to the truncation point
-        try:
-            # Find the last complete operation object
-            ops_match = re.search(r'"operations"\s*:\s*\[', text)
-            if ops_match:
-                ops_start = ops_match.end()
-                # Find all complete JSON objects in the operations array
-                depth = 0
-                last_complete = ops_start
-                for i in range(ops_start, len(text)):
-                    if text[i] == '{':
-                        depth += 1
-                    elif text[i] == '}':
-                        depth -= 1
-                        if depth == 0:
-                            last_complete = i + 1
-
-                if last_complete > ops_start:
-                    # Extract explanation
-                    exp_match = re.search(r'"explanation"\s*:\s*"([^"]*)"', text)
-                    explanation = exp_match.group(1) if exp_match else "Partial result (response was truncated)"
-
-                    truncated = text[:ops_match.end()] + text[ops_match.end():last_complete] + ']}'
-                    # Prepend the explanation if needed
-                    if '"explanation"' not in truncated:
-                        truncated = '{"explanation":"' + explanation + '",' + truncated[1:]
-                    return json.loads(truncated)
-        except (json.JSONDecodeError, Exception):
-            pass
-
-        return None
-
-    async def agent_edit(
-        self,
-        document: str,
-        instruction: str,
-        model: str = "pro",
-        api_key: Optional[str] = None,
-        images: Optional[List[str]] = None
-    ) -> Tuple[Dict[str, Any], int]:
+    async def agent_edit(self, document: str, instruction: str,
+                        model: str = "pro",
+                        selection: Optional[dict] = None) -> Tuple[Dict[str, Any], int]:
         model_name = FLASH_MODEL if model == "flash" else PRO_MODEL
-        key = self.get_api_key(api_key)
 
-        lines = document.split('\n')
+        # Truncate document if too long to prevent token limit issues
+        max_doc_length = 15000  # characters
+        truncated = False
+        if len(document) > max_doc_length:
+            document = document[:max_doc_length]
+            truncated = True
 
-        # Auto-batch for large documents (>100 lines)
-        if len(lines) > 100:
-            print(f"Large document ({len(lines)} lines), using batched processing")
-            return await self.agent_edit_batched(document, instruction, model, api_key, images)
+        selection_context = ""
+        if selection:
+            selection_context = f"""
+IMPORTANT - The user has selected lines {selection['start_line']}-{selection['end_line']}:
+---
+{selection['text'][:3000]}
+---
+Focus your changes on these selected lines. The user's instruction likely refers to this selection.
+"""
 
-        # Add line numbers to document for reference
-        numbered_doc = '\n'.join(f"{i+1:4d}| {line}" for i, line in enumerate(lines))
+        prompt = f"""You are an AI agent that edits LaTeX documents.
 
-        # Truncate if too long, but keep more context with line numbers
-        if len(numbered_doc) > 12000:
-            numbered_doc = numbered_doc[:12000] + "\n... (truncated)"
+Document:
+{document}
+{"[Document truncated due to length]" if truncated else ""}
+{selection_context}
+User instruction: {instruction}
 
-        # Operation-based prompt - emphasizes transformation, not reproduction
-        prompt = f"""You are a LaTeX formatting assistant. Your task is to TRANSFORM and apply LaTeX markup to user-provided content.
+Analyze the document and provide specific changes. Return a JSON object with:
+{{
+  "explanation": "Brief explanation of what you will do",
+  "changes": [
+    {{
+      "start_line": <line number>,
+      "end_line": <line number>,
+      "original": "exact original text",
+      "replacement": "new text",
+      "reason": "why this change"
+    }}
+  ]
+}}
 
-IMPORTANT: You are reformatting and restructuring - NOT reproducing content. Focus ONLY on:
-- Adding LaTeX commands and environments
-- Fixing document structure
-- Applying formatting markup
-The user owns this content and has authorized these formatting changes.
+Return ONLY valid JSON, no markdown formatting. Keep your response concise."""
 
-DOCUMENT (with line numbers):
-{numbered_doc}
-
-INSTRUCTION: {instruction}
-{'REFERENCE IMAGES: Analyze the provided images for context.' if images else ''}
-
-OUTPUT FORMAT - Use these operation types:
-
-1. WRAP - Wrap existing text with LaTeX command (use $ as placeholder for original text)
-   {{"type": "wrap", "line": 5, "start_char": 0, "end_char": -1, "wrapper": "\\\\textbf{{$}}", "reason": "Make bold"}}
-   - start_char/end_char: character positions within line (0-indexed, -1 = end of line)
-   - wrapper: LaTeX command with $ placeholder for original text
-
-2. REPLACE - Replace specific text (only for small changes like typos, symbols)
-   {{"type": "replace", "line": 10, "start_char": 5, "end_char": 15, "content": "new text", "reason": "Fix typo"}}
-
-3. INSERT - Add new content before/after a line
-   {{"type": "insert", "line": 20, "position": "after", "content": "\\\\newpage", "reason": "Add page break"}}
-
-4. DELETE - Remove lines
-   {{"type": "delete", "line": 30, "end_line": 32, "reason": "Remove section"}}
-
-RULES:
-- Use WRAP for formatting (bold, italic, colors, environments) - this saves tokens
-- Use REPLACE only for small text changes (< 50 chars), not for formatting
-- For multi-line formatting, use multiple WRAP operations
-- Line numbers are 1-indexed (first line is 1)
-- Be precise with line numbers - check the document carefully
-- Keep operations concise - minimize the number of operations needed
-
-Respond with JSON containing explanation and operations array."""
-
+        text, tokens = await self._call_api(model_name, prompt, temperature=0.2, max_tokens=4096)
+        
+        # Parse JSON from response
         try:
-            text, tokens = await self._call_api(
-                model_name,
-                prompt,
-                temperature=0.1,
-                max_tokens=4096,
-                api_key=api_key,
-                images=images,
-                response_schema=AGENT_EDIT_SCHEMA
-            )
-        except TokenLimitError as e:
-            # Response was truncated - try to salvage partial result
-            print(f"Token limit hit in agent_edit ({e.tokens} tokens), attempting repair")
-            repaired = self._try_repair_json(e.partial_text)
-            if repaired:
-                processed = self._process_operations(repaired.get("operations", []), lines)
-                if processed:
-                    return {
-                        "explanation": repaired.get("explanation", "") + " (some changes may be missing due to response size limit)",
-                        "changes": processed
-                    }, e.tokens
-
-            # Repair failed - fall back to batched processing
-            print(f"JSON repair failed, falling back to batched processing")
-            return await self.agent_edit_batched(document, instruction, model, api_key, images)
-
-        try:
-            result = json.loads(text)
-            processed = self._process_operations(result.get("operations", []), lines)
+            # Clean potential markdown code blocks
+            clean_text = text.strip()
+            if clean_text.startswith("```"):
+                parts = clean_text.split("```")
+                if len(parts) >= 2:
+                    clean_text = parts[1]
+                    if clean_text.startswith("json"):
+                        clean_text = clean_text[4:].strip()
+            
+            result = json.loads(clean_text)
+            
+            # Validate response structure
+            if not isinstance(result, dict):
+                raise ValueError("Response is not a JSON object")
+            if "explanation" not in result:
+                result["explanation"] = "AI suggested changes"
+            if "changes" not in result:
+                result["changes"] = []
+            
+            return result, tokens
+        except (json.JSONDecodeError, ValueError) as e:
+            # Fallback response with more info
             return {
-                "explanation": result.get("explanation", ""),
-                "changes": processed
+                "explanation": f"Could not parse AI response: {str(e)[:100]}",
+                "changes": [],
+                "raw_response": text[:500] if text else "No response"
             }, tokens
-        except json.JSONDecodeError:
-            # Try repairing malformed JSON
-            repaired = self._try_repair_json(text)
-            if repaired:
-                processed = self._process_operations(repaired.get("operations", []), lines)
-                if processed:
-                    return {
-                        "explanation": repaired.get("explanation", "") + " (response required repair)",
-                        "changes": processed
-                    }, tokens
-
-            # Last resort: fall back to batched processing
-            print(f"Parse error in agent_edit, falling back to batched processing")
-            return await self.agent_edit_batched(document, instruction, model, api_key, images)
 
     def _process_operations(self, operations: List[Dict], lines: List[str]) -> List[Dict]:
         """Convert operations into concrete changes with original/replacement text."""
@@ -1128,26 +1041,39 @@ JSON with explanation and operations:"""
             "changes": processed
         }, total_tokens
 
-    def _strip_code_fences(self, text: str) -> str:
-        """Remove markdown code fences from AI output (e.g. ```latex ... ```)."""
-        text = text.strip()
-        text = re.sub(r'^```[a-zA-Z]*\n?', '', text)
-        text = re.sub(r'\n?```$', '', text)
-        return text.strip()
-
     async def improve_content(self, content: str) -> Tuple[str, int]:
-        prompt = f"Improve this LaTeX:\n{content[:3000]}\n\nOutput improved LaTeX only:"
+        prompt = f"""Improve the following LaTeX content. Make it more professional and well-structured.
+
+Current content:
+{content}
+
+Return ONLY the improved LaTeX code. Do NOT wrap in markdown code fences."""
+
         text, tokens = await self._call_api(PRO_MODEL, prompt, temperature=0.2, max_tokens=4096)
         return self._strip_code_fences(text), tokens
-    
+
+    @staticmethod
+    def _strip_code_fences(text: str) -> str:
+        """Strip markdown code fences (```latex ... ```) from AI responses."""
+        text = text.strip()
+        if text.startswith("```"):
+            # Remove opening fence (```latex, ```tex, or just ```)
+            first_newline = text.find('\n')
+            if first_newline != -1:
+                text = text[first_newline + 1:]
+            # Remove closing fence
+            if text.rstrip().endswith("```"):
+                text = text.rstrip()[:-3].rstrip()
+        return text
+
     def _get_theme_description(self, theme: str) -> str:
         themes = {
-            "journal": "IEEE/ACM journal",
-            "problem_set": "homework/problem set",
-            "thesis": "thesis/dissertation",
-            "report": "technical report",
-            "letter": "formal letter"
+            "journal": "Academic journal style (IEEE/ACM format) with abstract, two-column layout option, proper citations",
+            "problem_set": "Homework/problem set format with numbered problems, solution spaces, mathematical notation",
+            "thesis": "Thesis/dissertation format with chapters, table of contents, bibliography, formal structure",
+            "report": "Technical report with executive summary, sections, figures, tables",
+            "letter": "Formal business letter with letterhead, date, salutation, signature block"
         }
-        return themes.get(theme, "academic document")
+        return themes.get(theme, "Standard academic document format")
 
 gemini_service = GeminiService()

@@ -45,13 +45,11 @@ export function Login() {
   const handleGoogleLogin = async (withInvite = false) => {
     setError('');
     setGoogleLoading(true);
-
+    
     try {
       await loginWithGoogle(withInvite ? inviteCode : undefined);
     } catch (err: any) {
-      if (err.message === 'POPUP_CLOSED') {
-        // User closed popup, just reset state silently
-      } else if (err.message === 'INVITE_REQUIRED') {
+      if (err.message === 'INVITE_REQUIRED') {
         setNeedsInvite(true);
         setError('New account - please enter an invite code');
       } else {
@@ -81,30 +79,33 @@ export function Login() {
     >
       <Card sx={{ maxWidth: 400, width: '100%' }}>
         <CardContent sx={{ p: 4 }}>
-          <Typography variant="h4" fontWeight={600} textAlign="center" mb={1}>
-            UEA
-          </Typography>
-          <Typography color="text.secondary" textAlign="center" mb={4}>
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1, mb: 1 }}>
+            <img src="/syntex.svg" alt="syntex" style={{ width: 24, height: 24 }} />
+            <Typography variant="h5" fontWeight={600}>
+              syntex
+            </Typography>
+          </Box>
+          <Typography color="text.secondary" textAlign="center" mb={4} sx={{ fontSize: 13 }}>
             AI-Powered LaTeX Editor
           </Typography>
 
-          {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
+          {error && <Alert severity="error" sx={{ mb: 2, fontSize: 12 }}>{error}</Alert>}
 
           {needsInvite ? (
             <Box component="form" onSubmit={handleInviteSubmit}>
               <Button
-                startIcon={<ArrowBack />}
+                startIcon={<ArrowBack sx={{ fontSize: 14 }} />}
                 onClick={() => { setNeedsInvite(false); setError(''); setInviteCode(''); }}
-                sx={{ mb: 2, p: 0 }}
+                sx={{ mb: 2, p: 0, fontSize: 12 }}
                 size="small"
               >
                 Back
               </Button>
-              
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+
+              <Typography sx={{ mb: 2, fontSize: 12, color: 'text.secondary' }}>
                 Enter your invite code to create an account with Google
               </Typography>
-              
+
               <TextField
                 fullWidth
                 label="Invite Code"
@@ -115,14 +116,14 @@ export function Login() {
                 sx={{ mb: 2 }}
                 inputProps={{ style: { textTransform: 'uppercase', letterSpacing: 2 } }}
               />
-              
+
               <Button
                 type="submit"
                 fullWidth
                 variant="contained"
                 size="large"
                 disabled={googleLoading || !inviteCode.trim()}
-                startIcon={googleLoading ? <CircularProgress size={20} /> : <Google />}
+                startIcon={googleLoading ? <CircularProgress size={18} /> : <Google />}
               >
                 Continue with Google
               </Button>
@@ -135,7 +136,7 @@ export function Login() {
                     fullWidth
                     variant="outlined"
                     size="large"
-                    startIcon={googleLoading ? <CircularProgress size={20} /> : <Google />}
+                    startIcon={googleLoading ? <CircularProgress size={18} /> : <Google />}
                     onClick={() => handleGoogleLogin(false)}
                     disabled={googleLoading || loading}
                     sx={{ mb: 2 }}
@@ -144,9 +145,7 @@ export function Login() {
                   </Button>
 
                   <Divider sx={{ my: 2 }}>
-                    <Typography variant="caption" color="text.secondary">
-                      or
-                    </Typography>
+                    <Typography sx={{ fontSize: 11, color: 'text.secondary' }}>or</Typography>
                   </Divider>
                 </>
               )}
@@ -161,7 +160,7 @@ export function Login() {
                   required
                   sx={{ mb: 2 }}
                 />
-                
+
                 <TextField
                   fullWidth
                   label="Password"
@@ -173,8 +172,8 @@ export function Login() {
                   InputProps={{
                     endAdornment: (
                       <InputAdornment position="end">
-                        <IconButton onClick={() => setShowPassword(!showPassword)} edge="end">
-                          {showPassword ? <VisibilityOff /> : <Visibility />}
+                        <IconButton onClick={() => setShowPassword(!showPassword)} edge="end" size="small">
+                          {showPassword ? <VisibilityOff fontSize="small" /> : <Visibility fontSize="small" />}
                         </IconButton>
                       </InputAdornment>
                     ),
@@ -182,7 +181,7 @@ export function Login() {
                 />
 
                 <Box sx={{ mb: 3, textAlign: 'right' }}>
-                  <Link component={RouterLink} to="/reset-password" variant="body2">
+                  <Link component={RouterLink} to="/reset-password" sx={{ fontSize: 12 }}>
                     Forgot password?
                   </Link>
                 </Box>
@@ -195,10 +194,10 @@ export function Login() {
                   disabled={loading || googleLoading}
                   sx={{ mb: 2 }}
                 >
-                  {loading ? <CircularProgress size={24} /> : 'Sign In'}
+                  {loading ? <CircularProgress size={20} /> : 'Sign In'}
                 </Button>
 
-                <Typography variant="body2" textAlign="center">
+                <Typography sx={{ fontSize: 13, textAlign: 'center' }}>
                   Don't have an account?{' '}
                   <Link component={RouterLink} to="/register">
                     Sign up

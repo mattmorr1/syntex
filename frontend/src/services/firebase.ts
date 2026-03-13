@@ -51,17 +51,9 @@ export async function registerWithEmail(email: string, password: string): Promis
 
 export async function loginWithGoogle(): Promise<{ token: string; user: User }> {
   if (!auth || !googleProvider) throw new Error('Firebase not configured');
-  try {
-    const result = await signInWithPopup(auth, googleProvider);
-    const token = await result.user.getIdToken();
-    return { token, user: result.user };
-  } catch (error: any) {
-    // Handle popup closed by user
-    if (error.code === 'auth/popup-closed-by-user' || error.code === 'auth/cancelled-popup-request') {
-      throw new Error('POPUP_CLOSED');
-    }
-    throw error;
-  }
+  const result = await signInWithPopup(auth, googleProvider);
+  const token = await result.user.getIdToken();
+  return { token, user: result.user };
 }
 
 export async function logoutFirebase(): Promise<void> {
@@ -86,17 +78,6 @@ export function onAuthChange(callback: (user: User | null) => void): () => void 
 export async function getCurrentToken(): Promise<string | null> {
   if (!auth?.currentUser) return null;
   return auth.currentUser.getIdToken();
-}
-
-// Force refresh token (useful after app reopen)
-export async function refreshToken(): Promise<string | null> {
-  if (!auth?.currentUser) return null;
-  return auth.currentUser.getIdToken(true); // true forces refresh
-}
-
-// Check if user is signed in to Firebase
-export function isFirebaseSignedIn(): boolean {
-  return !!auth?.currentUser;
 }
 
 export { auth };

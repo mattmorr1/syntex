@@ -1,4 +1,5 @@
 import base64
+import uuid
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import Response
 
@@ -9,23 +10,43 @@ from api.routers.auth import get_current_user
 
 router = APIRouter(tags=["Compile"])
 
+# In-memory cache for compiled PDFs (keyed by random ID)
+_pdf_cache: dict[str, bytes] = {}
+_MAX_CACHE = 50
+
 @router.post("/compile", response_model=CompileResponse)
 async def compile_latex(request: CompileRequest, user: dict = Depends(get_current_user)):
     files = [f.dict() for f in request.files]
-    
+
     success, pdf_content, error = await latex_service.compile(files, request.main_file)
-    
+
     if success and pdf_content:
-        # Store PDF temporarily or return base64
-        pdf_base64 = base64.b64encode(pdf_content).decode()
+        # Store PDF in memory and return a URL to fetch it
+        pdf_id = uuid.uuid4().hex
+        # Evict oldest entries if cache is full
+        if len(_pdf_cache) >= _MAX_CACHE:
+            oldest = next(iter(_pdf_cache))
+            del _pdf_cache[oldest]
+        _pdf_cache[pdf_id] = pdf_content
         return CompileResponse(
             success=True,
-            pdf_url=f"data:application/pdf;base64,{pdf_base64}"
+            pdf_url=f"/compiled-pdf/{pdf_id}"
         )
-    
+
     return CompileResponse(
         success=False,
         error=error
+    )
+
+@router.get("/compiled-pdf/{pdf_id}")
+async def get_compiled_pdf(pdf_id: str):
+    pdf_content = _pdf_cache.get(pdf_id)
+    if not pdf_content:
+        raise HTTPException(status_code=404, detail="PDF not found or expired")
+    return Response(
+        content=pdf_content,
+        media_type="application/pdf",
+        headers={"Cache-Control": "private, max-age=300"},
     )
 
 @router.get("/download-pdf/{project_id}")

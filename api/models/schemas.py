@@ -107,13 +107,17 @@ class ChatResponse(BaseModel):
     response: str
     tokens: int
 
+class SelectionContext(BaseModel):
+    text: str
+    start_line: int
+    end_line: int
+
 class AgentEditRequest(BaseModel):
     project_id: str
     instruction: str
     document: str
     model: Optional[Literal["flash", "pro"]] = "pro"
-    images: Optional[List[str]] = None  # Base64 encoded images
-    force_batch: Optional[bool] = False  # Force batched processing for thorough analysis
+    selection: Optional[SelectionContext] = None
 
 class DiffChange(BaseModel):
     start_line: int

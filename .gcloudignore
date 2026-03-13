@@ -1,23 +1,51 @@
-# Explicitly ignore only these
+# Ignore git
 .git/
 .gitignore
-.dockerignore
-.gcloudignore
-node_modules/
-frontend/node_modules/
-venv/
-env/
-__pycache__/
-*.pyc
+
+# Ignore IDE
 .vscode/
 .idea/
-.DS_Store
+
+# Ignore local env files (env.yaml included in upload for Cloud Run deploy)
 .env
-.env.*
-*.log
-tmp/
-temp/
-.coverage
+.env.local
+.env.production
+
+# Ignore node_modules (rebuilt in Docker)
+node_modules/
+frontend/node_modules/
+
+# Ignore Python cache
+__pycache__/
+*.py[cod]
+*.so
+venv/
+.venv/
+
+# Ignore build artifacts
+*.egg-info/
+dist/
+build/
+
+# Ignore test files
 .pytest_cache/
+.coverage
 htmlcov/
-.claude
+
+# Ignore temp files
+*.tmp
+*.temp
+tmp/
+*.log
+
+# Ignore OS files
+.DS_Store
+Thumbs.db
+
+# DO NOT ignore these (explicitly include):
+# !api/
+# !frontend/
+# !templates/
+# !requirements.txt
+# !Dockerfile
+# !*.py

@@ -54,9 +54,27 @@ export const api = {
     }),
 
   // Projects
-  getProjects: () => request<any[]>('/projects'),
-  
-  getProject: (id: string) => request<any>(`/projects/${id}`),
+  getProjects: async () => {
+    const projects = await request<any[]>('/projects');
+    return projects.map(p => ({
+      ...p,
+      createdAt: p.created_at || p.createdAt || '',
+      updatedAt: p.updated_at || p.updatedAt || p.created_at || p.createdAt || '',
+      mainFile: p.main_file || p.mainFile,
+      customTheme: p.custom_theme || p.customTheme,
+    }));
+  },
+
+  getProject: async (id: string) => {
+    const p = await request<any>(`/projects/${id}`);
+    return {
+      ...p,
+      createdAt: p.created_at || p.createdAt || '',
+      updatedAt: p.updated_at || p.updatedAt || p.created_at || p.createdAt || '',
+      mainFile: p.main_file || p.mainFile,
+      customTheme: p.custom_theme || p.customTheme,
+    };
+  },
   
   createProject: (data: { name: string; theme: string; customTheme?: string }) =>
     request<any>('/projects', { method: 'POST', body: JSON.stringify(data) }),
@@ -87,10 +105,11 @@ export const api = {
     }),
 
   // AI
-  autocomplete: (context: string, cursor: number, fileName: string) =>
+  autocomplete: (context: string, cursor: number, fileName: string, signal?: AbortSignal) =>
     request<{ suggestion: string; tokens: number }>('/ai/autocomplete', {
       method: 'POST',
       body: JSON.stringify({ context, cursor_position: cursor, file_name: fileName }),
+      signal,
     }),
 
   chat: (projectId: string, message: string, context: string, model?: string) =>
@@ -99,7 +118,13 @@ export const api = {
       body: JSON.stringify({ project_id: projectId, message, context, model }),
     }),
 
-  agentEdit: (projectId: string, instruction: string, document: string, model?: string, images?: string[], forceBatch?: boolean) =>
+  agentEdit: (
+    projectId: string,
+    instruction: string,
+    document: string,
+    model?: string,
+    selection?: { text: string; start_line: number; end_line: number },
+  ) =>
     request<{
       explanation: string;
       changes: Array<{
@@ -112,8 +137,64 @@ export const api = {
       tokens: number;
     }>('/ai/agent-edit', {
       method: 'POST',
-      body: JSON.stringify({ project_id: projectId, instruction, document, model, images, force_batch: forceBatch }),
+      body: JSON.stringify({ project_id: projectId, instruction, document, model, selection }),
     }),
+
+  agentEditStream: async (
+    projectId: string,
+    instruction: string,
+    document: string,
+    model?: string,
+    selection?: { text: string; start_line: number; end_line: number },
+    onChunk?: (text: string) => void,
+    onResult?: (data: { explanation: string; changes: any[]; tokens: number }) => void,
+    onError?: (message: string) => void,
+  ) => {
+    const token = useAuthStore.getState().token;
+    const response = await fetch(`${API_BASE}/ai/agent-edit/stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token && { Authorization: `Bearer ${token}` }),
+      },
+      body: JSON.stringify({ project_id: projectId, instruction, document, model, selection }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: 'Request failed' }));
+      throw new Error(error.detail || 'Request failed');
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error('No response body');
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const data = line.slice(6).trim();
+          if (data === '[DONE]') return;
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed.type === 'chunk') onChunk?.(parsed.text);
+            else if (parsed.type === 'result') onResult?.(parsed);
+            else if (parsed.type === 'error') onError?.(parsed.message);
+          } catch {
+            // skip malformed chunks
+          }
+        }
+      }
+    }
+  },
 
   getChatHistory: (projectId: string) =>
     request<any[]>(`/ai/chat-history?project_id=${projectId}`),
@@ -138,36 +219,13 @@ export const api = {
   deactivateInvite: (code: string) =>
     request<void>(`/admin/invites/${code}`, { method: 'DELETE' }),
 
-  // Settings
-  getSettings: () => request<{ settings: any }>('/auth/settings'),
-  
-  updateSettings: (settings: any) =>
-    request<{ message: string }>('/auth/settings', {
-      method: 'POST',
-      body: JSON.stringify({ settings }),
-    }),
-
   // Upload
-  uploadFile: async (
-    file: File, 
-    theme: string, 
-    customTheme?: string,
-    options?: {
-      customPrompt?: string;
-      customCls?: string;
-      customPreamble?: string;
-      images?: string[];
-    }
-  ) => {
+  uploadFile: async (file: File, theme: string, customTheme?: string) => {
     const token = useAuthStore.getState().token;
     const formData = new FormData();
     formData.append('file', file);
     formData.append('theme', theme);
     if (customTheme) formData.append('custom_theme', customTheme);
-    if (options?.customPrompt) formData.append('custom_prompt', options.customPrompt);
-    if (options?.customCls) formData.append('custom_cls', options.customCls);
-    if (options?.customPreamble) formData.append('custom_preamble', options.customPreamble);
-    if (options?.images) formData.append('images', JSON.stringify(options.images));
 
     const response = await fetch(`${API_BASE}/upload`, {
       method: 'POST',

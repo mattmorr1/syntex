@@ -1,7 +1,7 @@
-from fastapi import APIRouter, HTTPException, Depends, Request
+from fastapi import APIRouter, HTTPException, Depends
+from fastapi.responses import StreamingResponse
 from typing import Optional
-from slowapi import Limiter
-from slowapi.util import get_remote_address
+import json as json_lib
 
 from api.models.schemas import (
     AutocompleteRequest, AutocompleteResponse,
@@ -12,24 +12,14 @@ from api.services.firestore import db_service
 from api.services.gemini import gemini_service
 from api.routers.auth import get_current_user
 
-# Rate limiter - 60 requests per minute for AI endpoints
-limiter = Limiter(key_func=get_remote_address)
 router = APIRouter(prefix="/ai", tags=["AI"])
 
-async def get_user_api_key(user: dict) -> Optional[str]:
-    """Get user's custom API key if set."""
-    settings = await db_service.get_user_settings(user["uid"])
-    return settings.get("gemini_api_key")
-
 @router.post("/autocomplete", response_model=AutocompleteResponse)
-@limiter.limit("120/minute")
-async def autocomplete(request: Request, body: AutocompleteRequest, user: dict = Depends(get_current_user)):
-    api_key = await get_user_api_key(user)
+async def autocomplete(request: AutocompleteRequest, user: dict = Depends(get_current_user)):
     suggestion, tokens = await gemini_service.autocomplete(
-        body.context,
-        body.cursor_position,
-        body.file_name,
-        api_key=api_key
+        request.context,
+        request.cursor_position,
+        request.file_name
     )
     
     # Update user token count (flash model)
@@ -38,18 +28,15 @@ async def autocomplete(request: Request, body: AutocompleteRequest, user: dict =
     return AutocompleteResponse(suggestion=suggestion, tokens=tokens)
 
 @router.post("/chat", response_model=ChatResponse)
-@limiter.limit("30/minute")
-async def chat(request: Request, body: ChatRequest, user: dict = Depends(get_current_user)):
-    api_key = await get_user_api_key(user)
+async def chat(request: ChatRequest, user: dict = Depends(get_current_user)):
     response_text, tokens = await gemini_service.chat(
-        body.message,
-        body.context,
-        body.model or "flash",
-        api_key=api_key
+        request.message,
+        request.context,
+        request.model or "flash"
     )
     
     # Update tokens based on model
-    if body.model == "pro":
+    if request.model == "pro":
         await db_service.update_user_tokens(user["uid"], pro_tokens=tokens)
     else:
         await db_service.update_user_tokens(user["uid"], flash_tokens=tokens)
@@ -57,9 +44,9 @@ async def chat(request: Request, body: ChatRequest, user: dict = Depends(get_cur
     # Save chat history
     await db_service.save_chat(
         uid=user["uid"],
-        project_id=body.project_id,
+        project_id=request.project_id,
         messages=[
-            {"role": "user", "content": body.message, "tokens": 0},
+            {"role": "user", "content": request.message, "tokens": 0},
             {"role": "assistant", "content": response_text, "tokens": tokens}
         ]
     )
@@ -67,48 +54,73 @@ async def chat(request: Request, body: ChatRequest, user: dict = Depends(get_cur
     return ChatResponse(response=response_text, tokens=tokens)
 
 @router.post("/agent-edit", response_model=AgentEditResponse)
-@limiter.limit("20/minute")
-async def agent_edit(request: Request, body: AgentEditRequest, user: dict = Depends(get_current_user)):
-    api_key = await get_user_api_key(user)
-
-    # Use batched processing if forced or for large documents
-    if body.force_batch:
-        result, tokens = await gemini_service.agent_edit_batched(
-            body.document,
-            body.instruction,
-            body.model or "pro",
-            api_key=api_key,
-            images=body.images
-        )
-    else:
+async def agent_edit(request: AgentEditRequest, user: dict = Depends(get_current_user)):
+    try:
         result, tokens = await gemini_service.agent_edit(
-            body.document,
-            body.instruction,
-            body.model or "pro",
-            api_key=api_key,
-            images=body.images
+            request.document,
+            request.instruction,
+            request.model or "pro",
+            selection=request.selection.model_dump() if request.selection else None
         )
-    
-    # Update tokens
-    if body.model == "flash":
-        await db_service.update_user_tokens(user["uid"], flash_tokens=tokens)
-    else:
-        await db_service.update_user_tokens(user["uid"], pro_tokens=tokens)
-    
-    changes = [
-        DiffChange(
-            start_line=c.get("start_line", 0),
-            end_line=c.get("end_line", 0),
-            original=c.get("original", ""),
-            replacement=c.get("replacement", ""),
-            reason=c.get("reason", "")
-        ) for c in result.get("changes", [])
-    ]
-    
-    return AgentEditResponse(
-        explanation=result.get("explanation", ""),
-        changes=changes,
-        tokens=tokens
+        
+        # Update tokens
+        if request.model == "flash":
+            await db_service.update_user_tokens(user["uid"], flash_tokens=tokens)
+        else:
+            await db_service.update_user_tokens(user["uid"], pro_tokens=tokens)
+        
+        changes = [
+            DiffChange(
+                start_line=c.get("start_line", 0),
+                end_line=c.get("end_line", 0),
+                original=c.get("original", ""),
+                replacement=c.get("replacement", ""),
+                reason=c.get("reason", "")
+            ) for c in result.get("changes", [])
+        ]
+        
+        return AgentEditResponse(
+            explanation=result.get("explanation", ""),
+            changes=changes,
+            tokens=tokens
+        )
+    except Exception as e:
+        error_msg = str(e)
+        # Return a user-friendly error response
+        return AgentEditResponse(
+            explanation=f"Error: {error_msg}",
+            changes=[],
+            tokens=0
+        )
+
+@router.post("/agent-edit/stream")
+async def agent_edit_stream(request: AgentEditRequest, user: dict = Depends(get_current_user)):
+    async def event_generator():
+        try:
+            selection_dict = request.selection.model_dump() if request.selection else None
+            async for event in gemini_service.agent_edit_stream(
+                request.document,
+                request.instruction,
+                request.model or "pro",
+                selection=selection_dict
+            ):
+                if event["type"] == "chunk":
+                    yield f"data: {json_lib.dumps({'type': 'chunk', 'text': event['text']})}\n\n"
+                elif event["type"] == "result":
+                    result = event["data"]
+                    yield f"data: {json_lib.dumps({'type': 'result', 'explanation': result.get('explanation', ''), 'changes': result.get('changes', []), 'tokens': 0})}\n\n"
+        except Exception as e:
+            yield f"data: {json_lib.dumps({'type': 'error', 'message': str(e)})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
     )
 
 @router.get("/chat-history")

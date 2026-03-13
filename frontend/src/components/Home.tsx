@@ -13,16 +13,6 @@ import {
   MenuItem,
   Skeleton,
   Tooltip,
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogActions,
-  FormControl,
-  InputLabel,
-  Select,
-  Tabs,
-  Tab,
-  Chip,
 } from '@mui/material';
 import {
   Add,
@@ -32,7 +22,6 @@ import {
   Assignment,
   School,
   Mail,
-  Tune,
   Close,
   Search,
   MoreVert,
@@ -40,8 +29,6 @@ import {
   ContentCopy,
   Delete,
   Download,
-  Settings,
-  Image as ImageIcon,
 } from '@mui/icons-material';
 import { api } from '../services/api';
 import { useThemeStore } from '../store/themeStore';
@@ -64,23 +51,17 @@ export function Home() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [error, setError] = useState('');
   const [dragActive, setDragActive] = useState(false);
-  
-  // Upload customization
-  const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
-  const [uploadTab, setUploadTab] = useState(0);
-  const [uploadTheme, setUploadTheme] = useState('report');
-  const [customPrompt, setCustomPrompt] = useState('');
-  const [customCls, setCustomCls] = useState('');
-  const [customPreamble, setCustomPreamble] = useState('');
-  const [referenceImages, setReferenceImages] = useState<{ file: File; preview: string }[]>([]);
-  
+
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [menuAnchor, setMenuAnchor] = useState<{ el: HTMLElement; project: Project } | null>(null);
 
-  const borderColor = mode === 'dark' ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)';
-  const hoverBg = mode === 'dark' ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.03)';
+  const isDark = mode === 'dark';
+  const purpleBorder = isDark ? '#4c1d95' : '#ddd6fe';
+  const accentBorder = isDark ? '#3f3f46' : '#e4e4e7';
+  const hoverBg = isDark ? 'rgba(124, 58, 237, 0.06)' : 'rgba(109, 40, 217, 0.03)';
+  const surfaceBg = isDark ? '#18181b' : '#ffffff';
 
   useEffect(() => {
     loadProjects();
@@ -120,14 +101,13 @@ export function Home() {
     e.preventDefault();
     e.stopPropagation();
     setDragActive(false);
-    
+
     const droppedFile = e.dataTransfer.files?.[0];
-    if (droppedFile && (droppedFile.name.endsWith('.docx') || droppedFile.name.endsWith('.doc') || droppedFile.name.endsWith('.pdf'))) {
+    if (droppedFile && (droppedFile.name.endsWith('.docx') || droppedFile.name.endsWith('.doc'))) {
       setFile(droppedFile);
       setError('');
-      setUploadDialogOpen(true);
     } else {
-      setError('Please upload a .docx, .doc, or .pdf file');
+      setError('Please upload a .docx or .doc file');
     }
   }, []);
 
@@ -136,51 +116,7 @@ export function Home() {
     if (selectedFile) {
       setFile(selectedFile);
       setError('');
-      setUploadDialogOpen(true);
     }
-  };
-
-  const handleCloseUploadDialog = () => {
-    setUploadDialogOpen(false);
-    setFile(null);
-    setUploadTab(0);
-    setUploadTheme('report');
-    setCustomPrompt('');
-    setCustomCls('');
-    setCustomPreamble('');
-    // Clean up image previews
-    referenceImages.forEach(img => URL.revokeObjectURL(img.preview));
-    setReferenceImages([]);
-  };
-
-  const handleAddReferenceImages = (files: FileList | null) => {
-    if (!files) return;
-    const newImages: { file: File; preview: string }[] = [];
-    for (let i = 0; i < files.length && referenceImages.length + newImages.length < 10; i++) {
-      const f = files[i];
-      if (f.type.startsWith('image/')) {
-        newImages.push({ file: f, preview: URL.createObjectURL(f) });
-      }
-    }
-    if (newImages.length > 0) {
-      setReferenceImages(prev => [...prev, ...newImages]);
-    }
-  };
-
-  const handleRemoveReferenceImage = (index: number) => {
-    setReferenceImages(prev => {
-      URL.revokeObjectURL(prev[index].preview);
-      return prev.filter((_, i) => i !== index);
-    });
-  };
-
-  const fileToBase64 = (f: File): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.readAsDataURL(f);
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = reject;
-    });
   };
 
   const handleUpload = async () => {
@@ -195,22 +131,9 @@ export function Home() {
     }, 200);
 
     try {
-      // Convert reference images to base64
-      const imageData: string[] = [];
-      for (const img of referenceImages) {
-        const base64 = await fileToBase64(img.file);
-        imageData.push(base64);
-      }
-
-      const result = await api.uploadFile(file, uploadTheme, undefined, {
-        customPrompt: customPrompt || undefined,
-        customCls: customCls || undefined,
-        customPreamble: customPreamble || undefined,
-        images: imageData.length > 0 ? imageData : undefined,
-      });
+      const result = await api.uploadFile(file, 'report', undefined);
       setUploadProgress(100);
       clearInterval(progressInterval);
-      handleCloseUploadDialog();
       navigate(`/editor/${result.project_id}`);
     } catch (err: any) {
       setError(err.message || 'Upload failed');
@@ -286,15 +209,15 @@ export function Home() {
   return (
     <Box sx={{ minHeight: '100vh', bgcolor: 'background.default' }}>
       {/* Create Section */}
-      <Box sx={{ 
-        borderBottom: `1px solid ${borderColor}`,
-        bgcolor: mode === 'dark' ? 'rgba(255,255,255,0.02)' : 'rgba(0,0,0,0.01)',
+      <Box sx={{
+        borderBottom: `1px solid ${purpleBorder}`,
+        bgcolor: isDark ? 'rgba(124, 58, 237, 0.02)' : 'rgba(109, 40, 217, 0.01)',
       }}>
         <Box sx={{ maxWidth: 900, mx: 'auto', px: 3, py: 3 }}>
-          <Typography variant="caption" color="text.secondary" sx={{ mb: 1.5, display: 'block', fontSize: 11 }}>
+          <Typography sx={{ mb: 1.5, fontSize: 11, color: 'text.secondary', fontWeight: 500, letterSpacing: 0.5, textTransform: 'uppercase' }}>
             Start a new document
           </Typography>
-          
+
           <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'wrap' }}>
             {TEMPLATES.map((template) => {
               const Icon = template.icon;
@@ -305,31 +228,31 @@ export function Home() {
                     sx={{
                       width: 72,
                       height: 88,
-                      border: `1px solid ${borderColor}`,
-                      borderRadius: 1,
+                      border: `1px solid ${accentBorder}`,
+                      borderRadius: '8px',
                       display: 'flex',
                       flexDirection: 'column',
                       alignItems: 'center',
                       justifyContent: 'center',
                       gap: 0.5,
                       cursor: 'pointer',
-                      bgcolor: 'background.paper',
+                      bgcolor: surfaceBg,
                       transition: 'all 0.15s',
-                      '&:hover': { 
+                      '&:hover': {
                         borderColor: 'primary.main',
                         bgcolor: hoverBg,
                       },
                     }}
                   >
                     <Icon sx={{ fontSize: 24, color: template.id === 'blank' ? 'primary.main' : 'text.secondary' }} />
-                    <Typography variant="caption" sx={{ fontSize: 10 }}>
+                    <Typography sx={{ fontSize: 10, color: 'text.secondary' }}>
                       {template.label}
                     </Typography>
                   </Box>
                 </Tooltip>
               );
             })}
-            
+
             {/* Upload Box */}
             <Box
               onDragEnter={handleDrag}
@@ -340,8 +263,8 @@ export function Home() {
               sx={{
                 width: 72,
                 height: 88,
-                border: `1px dashed ${dragActive ? 'primary.main' : borderColor}`,
-                borderRadius: 1,
+                border: `1px dashed ${dragActive ? '#7c3aed' : accentBorder}`,
+                borderRadius: '8px',
                 display: 'flex',
                 flexDirection: 'column',
                 alignItems: 'center',
@@ -356,17 +279,63 @@ export function Home() {
               <input
                 id="file-input"
                 type="file"
-                accept=".doc,.docx,.pdf"
+                accept=".doc,.docx"
                 onChange={handleFileSelect}
                 style={{ display: 'none' }}
               />
               <CloudUpload sx={{ fontSize: 24, color: 'text.disabled' }} />
-              <Typography variant="caption" sx={{ fontSize: 10, color: 'text.secondary' }}>
+              <Typography sx={{ fontSize: 10, color: 'text.secondary' }}>
                 Upload
               </Typography>
             </Box>
           </Box>
 
+          {file && (
+            <Box sx={{
+              mt: 2,
+              p: 1.5,
+              border: `1px solid ${purpleBorder}`,
+              borderRadius: '8px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              bgcolor: surfaceBg,
+            }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <Description sx={{ fontSize: 18, color: 'primary.main' }} />
+                <Typography sx={{ fontSize: 12 }}>{file.name}</Typography>
+              </Box>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <Button
+                  size="small"
+                  variant="contained"
+                  onClick={handleUpload}
+                  disabled={uploading}
+                  sx={{ fontSize: 11, py: 0.5 }}
+                >
+                  Convert
+                </Button>
+                <IconButton size="small" onClick={() => setFile(null)} sx={{ p: 0.25 }}>
+                  <Close sx={{ fontSize: 16 }} />
+                </IconButton>
+              </Box>
+            </Box>
+          )}
+
+          {uploading && (
+            <Box sx={{ mt: 1 }}>
+              <LinearProgress
+                variant="determinate"
+                value={uploadProgress}
+                sx={{
+                  height: 2,
+                  borderRadius: 1,
+                  bgcolor: accentBorder,
+                  '& .MuiLinearProgress-bar': { bgcolor: 'primary.main' },
+                }}
+              />
+            </Box>
+          )}
         </Box>
       </Box>
 
@@ -377,7 +346,7 @@ export function Home() {
         )}
 
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
-          <Typography variant="caption" color="text.secondary" sx={{ fontSize: 11 }}>
+          <Typography sx={{ fontSize: 11, color: 'text.secondary', fontWeight: 500, letterSpacing: 0.5, textTransform: 'uppercase' }}>
             Recent documents
           </Typography>
           <TextField
@@ -385,7 +354,7 @@ export function Home() {
             placeholder="Search"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            sx={{ 
+            sx={{
               width: 180,
               '& .MuiInputBase-root': { fontSize: 12, height: 32 },
             }}
@@ -402,13 +371,13 @@ export function Home() {
         {loading ? (
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
             {[1, 2, 3, 4].map((i) => (
-              <Skeleton key={i} variant="rounded" height={44} />
+              <Skeleton key={i} variant="rounded" height={44} sx={{ borderRadius: '8px' }} />
             ))}
           </Box>
         ) : filteredProjects.length === 0 ? (
           <Box sx={{ textAlign: 'center', py: 6 }}>
             <Description sx={{ fontSize: 40, color: 'text.disabled', mb: 1 }} />
-            <Typography variant="body2" color="text.secondary" sx={{ fontSize: 12 }}>
+            <Typography sx={{ fontSize: 12, color: 'text.secondary' }}>
               {search ? 'No documents found' : 'No documents yet'}
             </Typography>
           </Box>
@@ -424,7 +393,7 @@ export function Home() {
                   gap: 2,
                   px: 1.5,
                   py: 1,
-                  borderRadius: 0.5,
+                  borderRadius: '8px',
                   cursor: 'pointer',
                   transition: 'background 0.1s',
                   '&:hover': { bgcolor: hoverBg },
@@ -433,12 +402,12 @@ export function Home() {
               >
                 <Description sx={{ fontSize: 18, color: 'primary.main', opacity: 0.8 }} />
                 <Box sx={{ flex: 1, minWidth: 0 }}>
-                  <Typography variant="body2" sx={{ fontSize: 13 }} noWrap>
+                  <Typography sx={{ fontSize: 13 }} noWrap>
                     {project.name}
                   </Typography>
                 </Box>
-                <Typography variant="caption" color="text.secondary" sx={{ fontSize: 11, minWidth: 60 }}>
-                  {formatDate(project.updatedAt)}
+                <Typography sx={{ fontSize: 11, color: 'text.secondary', minWidth: 60 }}>
+                  {formatDate(project.updatedAt || project.createdAt)}
                 </Typography>
                 <IconButton
                   className="actions"
@@ -460,226 +429,19 @@ export function Home() {
         onClose={handleMenuClose}
         PaperProps={{ sx: { minWidth: 140 } }}
       >
-        <MenuItem onClick={() => { navigate(`/editor/${menuAnchor?.project.id}`); handleMenuClose(); }} sx={{ fontSize: 13 }}>
-          <Edit sx={{ mr: 1.5, fontSize: 16 }} /> Open
+        <MenuItem onClick={() => { navigate(`/editor/${menuAnchor?.project.id}`); handleMenuClose(); }} sx={{ fontSize: 12 }}>
+          <Edit sx={{ mr: 1.5, fontSize: 14 }} /> Open
         </MenuItem>
-        <MenuItem onClick={handleDuplicate} sx={{ fontSize: 13 }}>
-          <ContentCopy sx={{ mr: 1.5, fontSize: 16 }} /> Duplicate
+        <MenuItem onClick={handleDuplicate} sx={{ fontSize: 12 }}>
+          <ContentCopy sx={{ mr: 1.5, fontSize: 14 }} /> Duplicate
         </MenuItem>
-        <MenuItem onClick={() => { window.open(`/api/download-pdf/${menuAnchor?.project.id}`); handleMenuClose(); }} sx={{ fontSize: 13 }}>
-          <Download sx={{ mr: 1.5, fontSize: 16 }} /> Download
+        <MenuItem onClick={() => { window.open(`/download-pdf/${menuAnchor?.project.id}`); handleMenuClose(); }} sx={{ fontSize: 12 }}>
+          <Download sx={{ mr: 1.5, fontSize: 14 }} /> Download
         </MenuItem>
-        <MenuItem onClick={handleDelete} sx={{ fontSize: 13, color: 'error.main' }}>
-          <Delete sx={{ mr: 1.5, fontSize: 16 }} /> Delete
+        <MenuItem onClick={handleDelete} sx={{ fontSize: 12, color: 'error.main' }}>
+          <Delete sx={{ mr: 1.5, fontSize: 14 }} /> Delete
         </MenuItem>
       </Menu>
-
-      {/* Upload Customization Dialog */}
-      <Dialog 
-        open={uploadDialogOpen} 
-        onClose={handleCloseUploadDialog}
-        maxWidth="md"
-        fullWidth
-      >
-        <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1, pb: 1 }}>
-          <Settings sx={{ fontSize: 20 }} />
-          <Typography variant="h6" sx={{ fontSize: 16, flex: 1 }}>Convert Document</Typography>
-          {file && (
-            <Typography variant="caption" color="text.secondary">
-              {file.name}
-            </Typography>
-          )}
-        </DialogTitle>
-        
-        <DialogContent>
-          {uploading && (
-            <Box sx={{ mb: 2 }}>
-              <LinearProgress variant="determinate" value={uploadProgress} sx={{ height: 3, borderRadius: 1 }} />
-              <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: 'block' }}>
-                Converting document...
-              </Typography>
-            </Box>
-          )}
-          
-          {error && <Alert severity="error" sx={{ mb: 2, fontSize: 12 }}>{error}</Alert>}
-          
-          <Tabs value={uploadTab} onChange={(_, v) => setUploadTab(v)} sx={{ mb: 2, borderBottom: 1, borderColor: 'divider' }}>
-            <Tab label="Template" sx={{ fontSize: 12 }} />
-            <Tab label="AI Instructions" sx={{ fontSize: 12 }} />
-            <Tab label="Reference Images" sx={{ fontSize: 12 }} icon={referenceImages.length > 0 ? <Chip size="small" label={referenceImages.length} sx={{ height: 16, fontSize: 10, ml: 0.5 }} /> : undefined} iconPosition="end" />
-            <Tab label="Custom Class" sx={{ fontSize: 12 }} />
-            <Tab label="Preamble" sx={{ fontSize: 12 }} />
-          </Tabs>
-          
-          {/* Template Tab */}
-          {uploadTab === 0 && (
-            <Box>
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 2, fontSize: 12 }}>
-                Select a LaTeX template style for your converted document.
-              </Typography>
-              <FormControl fullWidth size="small">
-                <InputLabel sx={{ fontSize: 13 }}>Template</InputLabel>
-                <Select
-                  value={uploadTheme}
-                  label="Template"
-                  onChange={(e) => setUploadTheme(e.target.value)}
-                  sx={{ fontSize: 13 }}
-                >
-                  <MenuItem value="report" sx={{ fontSize: 13 }}>Report</MenuItem>
-                  <MenuItem value="journal" sx={{ fontSize: 13 }}>Journal Article</MenuItem>
-                  <MenuItem value="thesis" sx={{ fontSize: 13 }}>Thesis</MenuItem>
-                  <MenuItem value="problem_set" sx={{ fontSize: 13 }}>Problem Set</MenuItem>
-                  <MenuItem value="letter" sx={{ fontSize: 13 }}>Letter</MenuItem>
-                </Select>
-              </FormControl>
-            </Box>
-          )}
-          
-          {/* AI Instructions Tab */}
-          {uploadTab === 1 && (
-            <Box>
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 2, fontSize: 12 }}>
-                Provide custom instructions for the AI when converting your document.
-              </Typography>
-              <TextField
-                fullWidth
-                multiline
-                rows={8}
-                placeholder="Example: Focus on mathematical notation. Use theorem environments for proofs. Include a table of contents. Preserve all code blocks with listings package..."
-                value={customPrompt}
-                onChange={(e) => setCustomPrompt(e.target.value)}
-                sx={{ '& textarea': { fontSize: 12, fontFamily: 'monospace' } }}
-              />
-            </Box>
-          )}
-          
-          {/* Reference Images Tab */}
-          {uploadTab === 2 && (
-            <Box>
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 2, fontSize: 12 }}>
-                Add reference images (diagrams, screenshots, handwritten notes) to help the AI understand your document better.
-              </Typography>
-              
-              <Box
-                sx={{
-                  border: '2px dashed',
-                  borderColor: 'divider',
-                  borderRadius: 1,
-                  p: 3,
-                  textAlign: 'center',
-                  cursor: 'pointer',
-                  mb: 2,
-                  '&:hover': { borderColor: 'primary.main', bgcolor: 'action.hover' },
-                }}
-                onClick={() => document.getElementById('reference-image-input')?.click()}
-              >
-                <input
-                  id="reference-image-input"
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  style={{ display: 'none' }}
-                  onChange={(e) => handleAddReferenceImages(e.target.files)}
-                />
-                <ImageIcon sx={{ fontSize: 40, color: 'text.disabled', mb: 1 }} />
-                <Typography variant="body2" color="text.secondary" sx={{ fontSize: 12 }}>
-                  Click or drag images here (max 10)
-                </Typography>
-              </Box>
-              
-              {referenceImages.length > 0 && (
-                <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-                  {referenceImages.map((img, index) => (
-                    <Box
-                      key={index}
-                      sx={{
-                        position: 'relative',
-                        width: 80,
-                        height: 80,
-                        borderRadius: 1,
-                        overflow: 'hidden',
-                        border: 1,
-                        borderColor: 'divider',
-                      }}
-                    >
-                      <img
-                        src={img.preview}
-                        alt={`Reference ${index + 1}`}
-                        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                      />
-                      <IconButton
-                        size="small"
-                        onClick={() => handleRemoveReferenceImage(index)}
-                        sx={{
-                          position: 'absolute',
-                          top: 2,
-                          right: 2,
-                          bgcolor: 'rgba(0,0,0,0.6)',
-                          color: 'white',
-                          p: 0.25,
-                          '&:hover': { bgcolor: 'error.main' },
-                        }}
-                      >
-                        <Close sx={{ fontSize: 14 }} />
-                      </IconButton>
-                    </Box>
-                  ))}
-                </Box>
-              )}
-            </Box>
-          )}
-          
-          {/* Custom Class Tab */}
-          {uploadTab === 3 && (
-            <Box>
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 2, fontSize: 12 }}>
-                Paste custom document class (.cls) content. This will be included as a separate file.
-              </Typography>
-              <TextField
-                fullWidth
-                multiline
-                rows={8}
-                placeholder="% Custom document class&#10;\NeedsTeXFormat{LaTeX2e}&#10;\ProvidesClass{myclass}[2024/01/01]&#10;..."
-                value={customCls}
-                onChange={(e) => setCustomCls(e.target.value)}
-                sx={{ '& textarea': { fontSize: 11, fontFamily: 'monospace' } }}
-              />
-            </Box>
-          )}
-          
-          {/* Preamble Tab */}
-          {uploadTab === 4 && (
-            <Box>
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 2, fontSize: 12 }}>
-                Add custom LaTeX preamble (packages, macros, settings) to be included in the document.
-              </Typography>
-              <TextField
-                fullWidth
-                multiline
-                rows={8}
-                placeholder="% Custom packages&#10;\usepackage{tikz}&#10;\usepackage{algorithm2e}&#10;&#10;% Custom macros&#10;\newcommand{\R}{\mathbb{R}}&#10;..."
-                value={customPreamble}
-                onChange={(e) => setCustomPreamble(e.target.value)}
-                sx={{ '& textarea': { fontSize: 11, fontFamily: 'monospace' } }}
-              />
-            </Box>
-          )}
-        </DialogContent>
-        
-        <DialogActions sx={{ px: 3, pb: 2 }}>
-          <Button onClick={handleCloseUploadDialog} size="small" disabled={uploading}>
-            Cancel
-          </Button>
-          <Button 
-            variant="contained" 
-            onClick={handleUpload}
-            disabled={uploading}
-            size="small"
-          >
-            {uploading ? 'Converting...' : 'Convert to LaTeX'}
-          </Button>
-        </DialogActions>
-      </Dialog>
     </Box>
   );
 }

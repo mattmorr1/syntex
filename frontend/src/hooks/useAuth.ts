@@ -48,19 +48,13 @@ export function useAuth() {
       throw new Error('Firebase not configured');
     }
 
-    let idToken: string;
-    try {
-      const result = await firebaseGoogleLogin();
-      idToken = result.token;
-    } catch (err: any) {
-      // Re-throw popup closed error as-is for the UI to handle
-      if (err.message === 'POPUP_CLOSED') {
-        throw err;
-      }
-      throw err;
+    // Reuse existing Firebase token if we already authenticated (e.g. invite code retry)
+    let idToken = token;
+    if (!idToken) {
+      const { token: newToken } = await firebaseGoogleLogin();
+      idToken = newToken;
+      setToken(idToken);
     }
-
-    setToken(idToken);
 
     try {
       const response = await api.googleAuth(idToken, inviteCode);
@@ -73,7 +67,7 @@ export function useAuth() {
       }
       throw err;
     }
-  }, [navigate, setToken, setUser]);
+  }, [navigate, token, setToken, setUser]);
 
   const logout = useCallback(async () => {
     if (firebaseEnabled) {

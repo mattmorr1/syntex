@@ -16,6 +16,7 @@ export default defineConfig({
       '/projects': { target: 'http://localhost:8000', changeOrigin: true },
       '/upload': { target: 'http://localhost:8000', changeOrigin: true },
       '/compile': { target: 'http://localhost:8000', changeOrigin: true },
+      '/compiled-pdf': { target: 'http://localhost:8000', changeOrigin: true },
       '/download-pdf': { target: 'http://localhost:8000', changeOrigin: true },
       '/ai': { target: 'http://localhost:8000', changeOrigin: true },
       '/admin': { target: 'http://localhost:8000', changeOrigin: true },
