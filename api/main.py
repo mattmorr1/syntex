@@ -79,6 +79,8 @@ if os.path.exists(frontend_dist):
 
 @app.on_event("startup")
 async def startup_event():
+    from api.services.firestore import db_service
+    db_service._ensure_initialized()
     print(f"App started successfully on port {os.environ.get('PORT', '8080')}")
 
 @app.get("/health")
