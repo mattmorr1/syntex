@@ -15,7 +15,7 @@ class LaTeXService:
         temp_dir = tempfile.mkdtemp()
         
         try:
-            # Write all files to temp directory
+
             for f in files:
                 file_path = os.path.join(temp_dir, f["name"])
                 

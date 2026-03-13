@@ -12,14 +12,6 @@ from config import Config
 FLASH_MODEL = os.getenv("GEMINI_FLASH_MODEL", "gemini-3.0-flash-preview")
 PRO_MODEL = os.getenv("GEMINI_PRO_MODEL", "gemini-3.1-pro-preview")
 
-# Claude models
-CLAUDE_SONNET = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
-CLAUDE_HAIKU = os.getenv("CLAUDE_FAST_MODEL", "claude-3-5-haiku-20241022")
-
-# OpenAI models
-OPENAI_GPT4 = os.getenv("OPENAI_MODEL", "gpt-4o")
-OPENAI_GPT4_MINI = os.getenv("OPENAI_FAST_MODEL", "gpt-4o-mini")
-
 class TokenLimitError(Exception):
     """Raised when response is truncated due to max_tokens limit."""
     def __init__(self, message: str, partial_text: str = "", tokens: int = 0):
@@ -123,39 +115,19 @@ class PromptCache:
 
 class GeminiService:
     def __init__(self):
-        # Gemini
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
         self.gemini_base_url = "https://generativelanguage.googleapis.com/v1beta"
-
-        # Claude (fallback)
-        self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
-        self.anthropic_base_url = "https://api.anthropic.com/v1"
-
-        # OpenAI (secondary fallback)
-        self.openai_api_key = os.getenv("OPENAI_API_KEY")
-        self.openai_base_url = "https://api.openai.com/v1"
-
-        self.enabled = bool(self.gemini_api_key or self.anthropic_api_key or self.openai_api_key)
+        self.enabled = bool(self.gemini_api_key)
         self.prompt_cache = PromptCache(ttl_minutes=30)
-        
-        # Log available providers
-        providers = []
-        if self.gemini_api_key: providers.append("Gemini")
-        if self.anthropic_api_key: providers.append("Claude")
-        if self.openai_api_key: providers.append("OpenAI")
-        
-        if providers:
-            print(f"AI providers available: {', '.join(providers)}")
+
+        if self.gemini_api_key:
+            print("Gemini AI enabled")
         else:
-            print("Warning: No AI API keys set. AI features disabled.")
+            print("Warning: GEMINI_API_KEY not set. AI features disabled.")
     
-    def get_api_key(self, custom_key: Optional[str] = None, provider: str = "gemini") -> Optional[str]:
+    def get_api_key(self, custom_key: Optional[str] = None) -> Optional[str]:
         if custom_key and custom_key.strip():
             return custom_key.strip()
-        if provider == "claude":
-            return self.anthropic_api_key
-        if provider == "openai":
-            return self.openai_api_key
         return self.gemini_api_key
 
     async def _create_cached_content(
@@ -301,144 +273,8 @@ class GeminiService:
                 return text, tokens
             except (TokenLimitError, ContentBlockedError):
                 raise
-            except Exception as e:
+            except Exception:
                 raise Exception(f"Failed to parse Gemini response: {result}")
-
-    async def _call_claude_api(
-        self,
-        model: str,
-        prompt: str,
-        temperature: float = 0.2,
-        max_tokens: int = 2048,
-        api_key: Optional[str] = None,
-        images: Optional[List[str]] = None,
-        response_schema: Optional[Dict] = None
-    ) -> Tuple[str, int]:
-        key = self.get_api_key(api_key, "claude")
-        if not key:
-            raise Exception("Claude API key not configured")
-
-        url = f"{self.anthropic_base_url}/messages"
-        
-        # Build content parts
-        content = []
-        if images:
-            for img_data in images:
-                if img_data.startswith('data:'):
-                    header, data = img_data.split(',', 1)
-                    media_type = header.split(':')[1].split(';')[0]
-                else:
-                    data = img_data
-                    media_type = 'image/jpeg'
-                content.append({
-                    "type": "image",
-                    "source": {"type": "base64", "media_type": media_type, "data": data}
-                })
-        
-        # Add JSON instruction if schema provided
-        if response_schema:
-            prompt = f"{prompt}\n\nRespond with valid JSON matching this schema: {json.dumps(response_schema)}"
-        
-        content.append({"type": "text", "text": prompt})
-
-        payload = {
-            "model": model,
-            "max_tokens": max_tokens,
-            "messages": [{"role": "user", "content": content}],
-            "temperature": temperature
-        }
-
-        headers = {
-            "x-api-key": key,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json"
-        }
-
-        async with httpx.AsyncClient() as client:
-            response = await client.post(url, json=payload, headers=headers, timeout=120.0)
-
-            if response.status_code != 200:
-                raise Exception(f"Claude API Error: {response.status_code} - {response.text}")
-
-            result = response.json()
-            
-            text = result["content"][0]["text"]
-            usage = result.get("usage", {})
-            tokens = usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
-            
-            stop_reason = result.get("stop_reason", "")
-            if stop_reason == "max_tokens":
-                raise TokenLimitError(
-                    f"Response truncated at {tokens} tokens",
-                    partial_text=text,
-                    tokens=tokens
-                )
-            
-            return text, tokens
-
-    async def _call_openai_api(
-        self,
-        model: str,
-        prompt: str,
-        temperature: float = 0.2,
-        max_tokens: int = 2048,
-        api_key: Optional[str] = None,
-        images: Optional[List[str]] = None,
-        response_schema: Optional[Dict] = None
-    ) -> Tuple[str, int]:
-        key = self.get_api_key(api_key, "openai")
-        if not key:
-            raise Exception("OpenAI API key not configured")
-
-        url = f"{self.openai_base_url}/chat/completions"
-        
-        # Build content
-        content = []
-        if images:
-            for img_data in images:
-                if not img_data.startswith('data:'):
-                    img_data = f"data:image/jpeg;base64,{img_data}"
-                content.append({"type": "image_url", "image_url": {"url": img_data}})
-        
-        content.append({"type": "text", "text": prompt})
-
-        payload: Dict[str, Any] = {
-            "model": model,
-            "max_tokens": max_tokens,
-            "messages": [{"role": "user", "content": content}],
-            "temperature": temperature
-        }
-        
-        # Add JSON mode if schema provided
-        if response_schema:
-            payload["response_format"] = {"type": "json_object"}
-
-        headers = {
-            "Authorization": f"Bearer {key}",
-            "Content-Type": "application/json"
-        }
-
-        async with httpx.AsyncClient() as client:
-            response = await client.post(url, json=payload, headers=headers, timeout=120.0)
-
-            if response.status_code != 200:
-                raise Exception(f"OpenAI API Error: {response.status_code} - {response.text}")
-
-            result = response.json()
-            
-            choice = result["choices"][0]
-            text = choice["message"]["content"]
-            usage = result.get("usage", {})
-            tokens = usage.get("total_tokens", 0)
-            
-            if choice.get("finish_reason") == "length":
-                raise TokenLimitError(
-                    f"Response truncated at {tokens} tokens",
-                    partial_text=text,
-                    tokens=tokens
-                )
-            
-            return text, tokens
 
     async def _call_api(
         self,
@@ -450,51 +286,13 @@ class GeminiService:
         images: Optional[List[str]] = None,
         response_schema: Optional[Dict] = None,
         cached_content: Optional[str] = None,
-        allow_fallback: bool = True
     ) -> Tuple[str, int]:
-        """
-        Unified API call with automatic fallback on content blocks.
-        Tries Gemini first, falls back to Claude, then OpenAI if blocked.
-        """
-        # Try Gemini first if available
-        if self.gemini_api_key:
-            try:
-                return await self._call_gemini_api(
-                    model, prompt, temperature, max_tokens,
-                    api_key, images, response_schema, cached_content
-                )
-            except ContentBlockedError as e:
-                if not allow_fallback:
-                    raise
-                print(f"Gemini blocked ({e.reason}), trying fallback provider...")
-            except Exception as e:
-                if not allow_fallback or "API Error" not in str(e):
-                    raise
-                print(f"Gemini error: {e}, trying fallback...")
-        
-        # Fallback to Claude
-        if self.anthropic_api_key:
-            try:
-                claude_model = CLAUDE_HAIKU if "flash" in model.lower() else CLAUDE_SONNET
-                return await self._call_claude_api(
-                    claude_model, prompt, temperature, max_tokens,
-                    None, images, response_schema
-                )
-            except Exception as e:
-                if not allow_fallback:
-                    raise
-                print(f"Claude error: {e}, trying OpenAI...")
-        
-        # Fallback to OpenAI
-        if self.openai_api_key:
-            openai_model = OPENAI_GPT4_MINI if "flash" in model.lower() else OPENAI_GPT4
-            return await self._call_openai_api(
-                openai_model, prompt, temperature, max_tokens,
-                None, images, response_schema
-            )
-        
-        # No providers available - dev mode
-        return self._dev_response(prompt), 0
+        if not self.gemini_api_key and not api_key:
+            return self._dev_response(prompt), 0
+        return await self._call_gemini_api(
+            model, prompt, temperature, max_tokens,
+            api_key, images, response_schema, cached_content
+        )
 
     def _dev_response(self, prompt: str) -> str:
         if "autocomplete" in prompt.lower():
@@ -652,7 +450,7 @@ Output COMPLETE compilable LaTeX. You MUST include \\end{{document}} at the end:
         return new_chunk
 
     async def chat(self, message: str, context: str,
-                  model: str = "flash", api_key: Optional[str] = None) -> Tuple[str, int]:
+                  model: str = "flash") -> Tuple[str, int]:
         model_name = FLASH_MODEL if model == "flash" else PRO_MODEL
         
         prompt = f"""You are a LaTeX expert assistant.
@@ -900,7 +698,6 @@ Return ONLY valid JSON, no markdown formatting. Keep your response concise."""
         """Process a single chunk and return operations with adjusted line numbers."""
 
         # Build numbered view of this chunk with context
-        chunk_lines = chunk['lines']
         start_line = chunk['start_line']
 
         # Add a few lines of context before/after
