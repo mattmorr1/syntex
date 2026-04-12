@@ -385,7 +385,7 @@ Return ONLY the completion text, nothing else. No explanations."""
             "OUTPUT: structured inventory only."
         )
         text, _ = await self._call_api(
-            FLASH_MODEL, prompt, temperature=0.0, max_tokens=3000, api_key=api_key
+            FLASH_MODEL, prompt, temperature=0.0, max_tokens=8192, api_key=api_key
         )
         return text
 
@@ -506,7 +506,7 @@ Return ONLY the completion text, nothing else. No explanations."""
                 text, tokens = await self._call_api(
                     PRO_MODEL, current_prompt,
                     temperature=0.1 if iteration > 0 else 0.15,
-                    max_tokens=8192,
+                    max_tokens=65536,
                     api_key=api_key,
                     images=current_images
                 )
@@ -555,7 +555,7 @@ Return ONLY the completion text, nothing else. No explanations."""
                         text, tokens = await self._call_api(
                             PRO_MODEL, current_prompt,
                             temperature=0.15,
-                            max_tokens=8192,
+                            max_tokens=65536,
                             api_key=api_key,
                             images=None,
                         )
@@ -656,7 +656,7 @@ Analyze the document and provide specific changes. Return a JSON object with:
 
 Return ONLY valid JSON, no markdown formatting. Keep your response concise."""
 
-        text, tokens = await self._call_api(model_name, prompt, temperature=0.2, max_tokens=4096)
+        text, tokens = await self._call_api(model_name, prompt, temperature=0.2, max_tokens=16384)
         
         # Parse JSON from response
         try:
@@ -992,7 +992,7 @@ Current content:
 
 Return ONLY the improved LaTeX code. Do NOT wrap in markdown code fences."""
 
-        text, tokens = await self._call_api(PRO_MODEL, prompt, temperature=0.2, max_tokens=4096)
+        text, tokens = await self._call_api(PRO_MODEL, prompt, temperature=0.2, max_tokens=65536)
         return self._strip_code_fences(text), tokens
 
     @staticmethod
