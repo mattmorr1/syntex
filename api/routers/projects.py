@@ -233,10 +233,19 @@ async def upload_file(
         # Update user tokens
         await db_service.update_user_tokens(user["uid"], pro_tokens=tokens)
 
+        # Generate bibliography from \cite{} keys found in the LaTeX output
+        bib_content = ""
+        try:
+            bib_content = await gemini_service._generate_bibliography(text_content, latex_content, None)
+            if bib_content:
+                logger.info(f"Bibliography generated: {len(bib_content)} chars")
+        except Exception as bib_err:
+            logger.warning(f"Bibliography generation failed: {bib_err}")
+
         # Build project files
         project_files = [
             {"name": "main.tex", "content": latex_content, "type": "tex"},
-            {"name": "references.bib", "content": "", "type": "bib"},
+            {"name": "references.bib", "content": bib_content, "type": "bib"},
         ]
 
         # Add custom class file if provided

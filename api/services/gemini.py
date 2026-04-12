@@ -598,7 +598,7 @@ Return ONLY the completion text, nothing else. No explanations."""
         assembled = await self._fix_labels(assembled, api_key)
 
         print(f"_generate_document_chunked: complete, {total_tokens} total tokens")
-        return assembled, total_tokens
+        return self._fix_latex_artifacts(assembled), total_tokens
 
     # ------------------------------------------------------------------ #
 
@@ -791,7 +791,64 @@ Return ONLY the completion text, nothing else. No explanations."""
             # Ensure document is closed even if we ran out of iterations
             accumulated = accumulated.rstrip() + "\n\\end{document}\n"
 
-        return accumulated, total_tokens
+        return self._fix_latex_artifacts(accumulated), total_tokens
+
+    @staticmethod
+    def _fix_latex_artifacts(text: str) -> str:
+        """
+        Fix common model-generated LaTeX artifacts before saving.
+        - \\t followed by whitespace (not braces): model meant the letter 't',
+          but \\t is LaTeX's tie-after accent, causing silent character loss on render.
+        """
+        # \t<space> → t<space>  (tie-after accent misused as the letter 't')
+        text = re.sub(r'\\t(\s)', r't\1', text)
+        return text
+
+    async def _generate_bibliography(
+        self, source_text: str, latex: str, api_key: Optional[str]
+    ) -> str:
+        """
+        Extract \\cite{} keys from generated LaTeX, then ask Flash to produce
+        matching BibTeX entries from the source reference list.
+        Returns a BibTeX string, or empty string on failure.
+        """
+        # Extract all cited keys
+        cited_keys = sorted(set(re.findall(r'\\cite\{([^}]+)\}', latex)))
+        if not cited_keys:
+            return ""
+
+        # Find the References / Bibliography section in the source text
+        ref_match = re.search(
+            r'(?:References|Bibliography|Works Cited)\s*\n([\s\S]{200,8000})',
+            source_text, re.IGNORECASE
+        )
+        ref_section = ref_match.group(1)[:6000] if ref_match else source_text[-4000:]
+
+        prompt = (
+            "You are a BibTeX formatter. Given the citation keys used in a LaTeX document "
+            "and the reference list from the source paper, produce a .bib file with a "
+            "BibTeX entry for every cited key.\n\n"
+            f"CITATION KEYS NEEDED: {', '.join(cited_keys)}\n\n"
+            f"SOURCE REFERENCE LIST:\n{ref_section}\n\n"
+            "RULES:\n"
+            "- Use the citation keys exactly as listed above.\n"
+            "- Infer author, title, year, journal/booktitle, volume, pages, doi from the reference list.\n"
+            "- If a key cannot be matched to a reference, create a placeholder entry.\n"
+            "- Output ONLY valid BibTeX — no explanations, no markdown fences.\n"
+            "- Start the first entry immediately.\n"
+        )
+        try:
+            text, _ = await self._call_api(
+                FLASH_MODEL, prompt, temperature=0.1,
+                max_tokens=8192, api_key=api_key
+            )
+            bib = self._strip_code_fences(text).strip()
+            # Sanity check: must contain at least one @article/@book/@misc
+            if re.search(r'@\w+\{', bib):
+                return bib
+        except Exception as e:
+            print(f"_generate_bibliography failed: {e}")
+        return ""
 
     def _deduplicate_continuation(self, accumulated: str, new_chunk: str) -> str:
         """Remove overlapping prefix from new_chunk that already exists at the end of accumulated."""
