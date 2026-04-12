@@ -665,6 +665,8 @@ export function Editor() {
                   projectId={currentProject?.id || ''}
                   document={activeFileContent}
                   selection={editorSelection}
+                  projectFiles={currentProject?.files}
+                  compileError={compileError}
                   onApplyChanges={(newContent) => {
                     if (activeFile) updateFileContent(activeFile, newContent);
                   }}

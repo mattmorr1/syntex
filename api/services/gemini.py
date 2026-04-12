@@ -408,6 +408,200 @@ Return ONLY the completion text, nothing else. No explanations."""
                 unique.append(c)
         return ', '.join(unique[:20]) if unique else ''
 
+    # ------------------------------------------------------------------ #
+    #  Section-chunked generation helpers                                  #
+    # ------------------------------------------------------------------ #
+
+    # JSON schema for structure pass response
+    _STRUCTURE_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "preamble": {"type": "string"},
+            "sections": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "heading": {"type": "string"},
+                        "placeholder": {"type": "string"},
+                        "source_start": {"type": "integer"},
+                        "source_end": {"type": "integer"},
+                    },
+                    "required": ["heading", "placeholder", "source_start", "source_end"],
+                },
+            },
+            "postamble": {"type": "string"},
+        },
+        "required": ["preamble", "sections", "postamble"],
+    }
+
+    async def _generate_structure(
+        self, content: str, theme_desc: str, cls_instruction: str,
+        custom_preamble: str, api_key: Optional[str]
+    ) -> Optional[Dict]:
+        """
+        Pass 1: Flash generates the LaTeX skeleton — preamble, section list with
+        source char offsets, and postamble. Returns parsed dict or None on failure.
+        """
+        prompt = (
+            f"You are a LaTeX document architect. Analyse the academic paper below "
+            f"and produce a JSON document skeleton using {theme_desc} style.\n\n"
+            "RULES:\n"
+            "- preamble: full \\documentclass + \\usepackage block + \\title + "
+            "\\author + \\date + \\begin{document} + \\maketitle + \\begin{abstract}...\\end{abstract}\n"
+            "- sections: array of top-level sections (Introduction, Methods, etc.), "
+            "each with a unique placeholder string (SECTION_0, SECTION_1, …) and the "
+            "approximate start/end character offsets in the source text\n"
+            "- postamble: \\bibliographystyle + \\bibliography + \\end{document}\n"
+            f"{cls_instruction}"
+            f"{('Extra preamble: ' + custom_preamble + chr(10)) if custom_preamble else ''}"
+            "\nSOURCE PAPER:\n"
+            f"{content[:40000]}\n\n"
+            "Return ONLY the JSON object."
+        )
+        try:
+            text, _ = await self._call_api(
+                FLASH_MODEL, prompt, temperature=0.1,
+                max_tokens=4096, api_key=api_key,
+                response_schema=self._STRUCTURE_SCHEMA
+            )
+            return json.loads(text)
+        except Exception as e:
+            print(f"_generate_structure failed: {e}")
+            return None
+
+    async def _fill_section(
+        self, section_text: str, heading: str, preamble: str,
+        inventory: str, theme_desc: str, cls_instruction: str,
+        api_key: Optional[str], max_tokens: int
+    ) -> Tuple[str, int]:
+        """
+        Pass 2: Pro fills one section with full token budget.
+        Returns (latex_body, tokens) — no preamble, no \\begin{document}.
+        """
+        inventory_block = (
+            "CONTENT CHECKLIST for this section (all items MUST appear):\n"
+            f"{inventory}\n\n"
+        ) if inventory else ""
+
+        prompt = (
+            f"You are a LaTeX typesetter filling the '{heading}' section of a document.\n\n"
+            "RULES:\n"
+            "- Output ONLY the LaTeX body for this section (\\section{...} through to "
+            "the last line before the next section).\n"
+            "- REPRODUCE ALL CONTENT VERBATIM: every equation, table, model, statistic, "
+            "and result must appear exactly as in the source.\n"
+            "- Transcribe all equations into LaTeX math notation.\n"
+            "- Reproduce every table completely using tabular or booktabs.\n"
+            "- Do NOT include \\documentclass, \\begin{document}, or \\end{document}.\n"
+            f"{cls_instruction}"
+            f"{inventory_block}"
+            f"PREAMBLE CONTEXT (for package awareness — do not repeat):\n{preamble[:1500]}\n\n"
+            f"SOURCE TEXT FOR THIS SECTION:\n{section_text}\n\n"
+            "BEGIN LATEX SECTION OUTPUT NOW:\n"
+        )
+        text, tokens = await self._call_api(
+            PRO_MODEL, prompt, temperature=0.15,
+            max_tokens=max_tokens, api_key=api_key
+        )
+        return self._strip_code_fences(text), tokens
+
+    async def _fix_labels(self, latex: str, api_key: Optional[str]) -> str:
+        """
+        Pass 3: Flash normalises \\label / \\ref names across the stitched document.
+        Returns fixed LaTeX or original on failure.
+        """
+        if len(latex) > 80000:
+            return latex  # too large to fix in one pass — skip
+        prompt = (
+            "The LaTeX document below was assembled from independently generated sections. "
+            "Ensure all \\label{} and \\ref{} names are consistent — if a \\ref{} has no "
+            "matching \\label{}, fix one of them. Do NOT change any mathematical content, "
+            "text, or structure. Return ONLY the corrected LaTeX.\n\n"
+            f"{latex}"
+        )
+        try:
+            text, _ = await self._call_api(
+                FLASH_MODEL, prompt, temperature=0.0,
+                max_tokens=65536, api_key=api_key
+            )
+            fixed = self._strip_code_fences(text)
+            # Sanity check: result should still contain \end{document}
+            if r"\end{document}" in fixed:
+                return fixed
+        except Exception as e:
+            print(f"_fix_labels failed: {e}")
+        return latex
+
+    async def _generate_document_chunked(
+        self,
+        content: str,
+        theme_desc: str,
+        cls_instruction: str,
+        extra_instructions: str,
+        custom_preamble: str,
+        images: Optional[List[str]],
+        api_key: Optional[str],
+        max_tokens: int
+    ) -> Optional[Tuple[str, int]]:
+        """
+        Three-pass section-chunked generation. Returns (latex, total_tokens) or None on failure.
+        """
+        # Pass 1: structure
+        structure = await self._generate_structure(content, theme_desc, cls_instruction, custom_preamble, api_key)
+        if not structure or not structure.get("sections"):
+            return None
+
+        preamble = structure["preamble"]
+        sections = structure["sections"]
+        postamble = structure["postamble"]
+        total_tokens = 0
+
+        print(f"_generate_document_chunked: {len(sections)} sections detected")
+
+        # Pass 2: fill sections in parallel, each with its own inventory
+        async def fill_one(section: Dict, idx: int) -> Tuple[int, str, int]:
+            src_start = section.get("source_start", 0)
+            src_end = section.get("source_end", len(content))
+            section_text = content[src_start:src_end]
+            if not section_text.strip():
+                section_text = content[max(0, src_start - 500): min(len(content), src_end + 500)]
+
+            # Per-section inventory (lightweight)
+            inv = ""
+            if len(section_text) > 500:
+                try:
+                    inv = await self._extract_content_inventory(section_text, api_key)
+                except Exception:
+                    pass
+
+            body, tokens = await self._fill_section(
+                section_text, section["heading"], preamble,
+                inv, theme_desc, cls_instruction, api_key, max_tokens
+            )
+            return idx, body, tokens
+
+        results = await asyncio.gather(*[fill_one(s, i) for i, s in enumerate(sections)])
+
+        # Stitch in order
+        section_bodies: Dict[int, str] = {}
+        for idx, body, tokens in results:
+            section_bodies[idx] = body
+            total_tokens += tokens
+
+        assembled = preamble + "\n\n"
+        for i, section in enumerate(sections):
+            assembled += section_bodies.get(i, f"% SECTION {i} MISSING\n") + "\n\n"
+        assembled += postamble
+
+        # Pass 3: fix labels (best-effort)
+        assembled = await self._fix_labels(assembled, api_key)
+
+        print(f"_generate_document_chunked: complete, {total_tokens} total tokens")
+        return assembled, total_tokens
+
+    # ------------------------------------------------------------------ #
+
     async def generate_document(
         self,
         content: str,
@@ -445,6 +639,21 @@ Return ONLY the completion text, nothing else. No explanations."""
         extra_instructions = ("Additional instructions: " + custom_prompt + "\n") if custom_prompt else ""
         extra_preamble = ("Extra preamble: " + custom_preamble + "\n") if custom_preamble else ""
         images_note = "Images supplied — include each with \\includegraphics in a figure environment.\n" if images else ""
+
+        # For long documents (>6000 chars), try section-chunked generation first
+        if len(content) > 6000:
+            try:
+                chunked_result = await self._generate_document_chunked(
+                    content, theme_desc, cls_instruction,
+                    extra_instructions, custom_preamble or "",
+                    images, api_key, max_tokens
+                )
+                if chunked_result is not None:
+                    print("generate_document: chunked path succeeded")
+                    return chunked_result
+                print("generate_document: chunked path returned None, falling back to single-pass")
+            except Exception as chunk_err:
+                print(f"generate_document: chunked path failed ({chunk_err}), falling back to single-pass")
 
         # ReAct step 1 — extract content inventory for substantial documents
         inventory = ""
@@ -611,9 +820,29 @@ Provide helpful, concise assistance. If suggesting code changes, show the LaTeX 
 
         return await self._call_api(model_name, prompt, temperature=0.3, max_tokens=1024)
     
+    def _build_project_context(self, project_files: Optional[List[Dict]], active_document: str) -> str:
+        """Build a context block from supporting project files (bib, cls, other tex)."""
+        if not project_files:
+            return ""
+        context_parts = []
+        for f in project_files:
+            content = f.get("content", "")
+            if not content or content == active_document:
+                continue
+            # Skip binary files and images
+            if f.get("type") in ("png", "jpg", "pdf"):
+                continue
+            truncated_content = content[:3000]
+            suffix = "..." if len(content) > 3000 else ""
+            context_parts.append(f"--- {f['name']} ---\n{truncated_content}{suffix}")
+        if not context_parts:
+            return ""
+        return "\nPROJECT FILES (for reference — do not reproduce unless instructed):\n" + "\n\n".join(context_parts) + "\n"
+
     async def agent_edit(self, document: str, instruction: str,
                         model: str = "pro",
-                        selection: Optional[dict] = None) -> Tuple[Dict[str, Any], int]:
+                        selection: Optional[dict] = None,
+                        project_files: Optional[List[Dict]] = None) -> Tuple[Dict[str, Any], int]:
         model_name = FLASH_MODEL if model == "flash" else PRO_MODEL
 
         # Truncate document if too long to prevent token limit issues
@@ -633,8 +862,10 @@ IMPORTANT - The user has selected lines {selection['start_line']}-{selection['en
 Focus your changes on these selected lines. The user's instruction likely refers to this selection.
 """
 
-        prompt = f"""You are an AI agent that edits LaTeX documents.
+        project_context = self._build_project_context(project_files, document)
 
+        prompt = f"""You are an AI agent that edits LaTeX documents.
+{project_context}
 Document:
 {document}
 {"[Document truncated due to length]" if truncated else ""}
@@ -1045,7 +1276,8 @@ Return ONLY the improved LaTeX code. Do NOT wrap in markdown code fences."""
         document: str,
         instruction: str,
         model: str = "pro",
-        selection: Optional[dict] = None
+        selection: Optional[dict] = None,
+        project_files: Optional[List[Dict]] = None
     ):
         """
         Async generator for agent edit with automatic continuation on token cap.
@@ -1059,7 +1291,7 @@ Return ONLY the improved LaTeX code. Do NOT wrap in markdown code fences."""
         total_tokens = 0
 
         try:
-            result, tokens = await self.agent_edit(document, instruction, model, selection)
+            result, tokens = await self.agent_edit(document, instruction, model, selection, project_files)
             total_tokens = tokens
             yield {"type": "result", "data": result, "tokens": total_tokens}
 

@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr, Field, ConfigDict
-from typing import Optional, List, Literal
+from typing import Optional, List, Literal, Dict
 from datetime import datetime
 
 def to_camel(string: str) -> str:
@@ -118,6 +118,7 @@ class AgentEditRequest(BaseModel):
     document: str
     model: Optional[Literal["flash", "pro"]] = "pro"
     selection: Optional[SelectionContext] = None
+    project_files: Optional[List[Dict]] = None  # [{name, content, type}, ...] for supporting files
 
 class DiffChange(BaseModel):
     start_line: int
