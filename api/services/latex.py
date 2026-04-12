@@ -24,14 +24,16 @@ class LaTeXService:
                 
                 # Handle binary vs text files
                 if f.get("type") in ["png", "jpg", "pdf"]:
-                    # For binary files, content should be base64
                     import base64
-                    content = base64.b64decode(f["content"])
+                    bin_content = base64.b64decode(f["content"])
                     with open(file_path, "wb") as fp:
-                        fp.write(content)
+                        fp.write(bin_content)
                 else:
+                    text = f["content"]
+                    if f.get("type") == "cls" or file_path.endswith(".cls"):
+                        text = self._patch_cls(text)
                     with open(file_path, "w", encoding="utf-8") as fp:
-                        fp.write(f["content"])
+                        fp.write(text)
             
             main_path = os.path.join(temp_dir, main_file)
             if not os.path.exists(main_path):
@@ -96,6 +98,26 @@ class LaTeXService:
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
     
+    @staticmethod
+    def _patch_cls(text: str) -> str:
+        """
+        Fix common compatibility errors in user-supplied .cls files before compilation.
+        """
+        # \newcommand\newblock errors if \newblock is already defined (it is, by LaTeX core).
+        # \providecommand is a safe no-op when the command already exists.
+        text = text.replace(r'\newcommand\newblock', r'\providecommand\newblock')
+
+        # Some cls files call \captionstyle (e.g. BUUEJ) without defining it.
+        # Inject a no-op definition just before \makeatother so it doesn't crash.
+        if r'\captionstyle' in text and r'\captionstyle{' not in text and r'\newcommand{\captionstyle}' not in text:
+            text = text.replace(
+                r'\makeatother',
+                r'\providecommand{\captionstyle}{}' + '\n' + r'\makeatother',
+                1
+            )
+
+        return text
+
     def _detect_compiler(self, files: List[Dict], main_file: str) -> str:
         main_content = ""
         for f in files:

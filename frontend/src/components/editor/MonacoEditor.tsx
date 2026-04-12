@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect, useCallback } from 'react';
+import { useRef, useState, useEffect, useCallback, forwardRef, useImperativeHandle } from 'react';
 import Editor, { Monaco, OnMount } from '@monaco-editor/react';
 import { Box, Typography } from '@mui/material';
 import { useThemeStore } from '../../store/themeStore';
@@ -10,6 +10,10 @@ export interface EditorSelection {
   endLine: number;
 }
 
+export interface MonacoEditorHandle {
+  insertText: (text: string) => void;
+}
+
 interface MonacoEditorProps {
   value: string;
   onChange: (value: string | undefined) => void;
@@ -18,7 +22,8 @@ interface MonacoEditorProps {
   onSelectionChange?: (selection: EditorSelection | null) => void;
 }
 
-export function MonacoEditor({ value, onChange, fileName, projectId, onSelectionChange }: MonacoEditorProps) {
+export const MonacoEditor = forwardRef<MonacoEditorHandle, MonacoEditorProps>(
+function MonacoEditor({ value, onChange, fileName, projectId, onSelectionChange }, ref) {
   const { mode } = useThemeStore();
   const editorRef = useRef<any>(null);
   const monacoRef = useRef<Monaco | null>(null);
@@ -221,6 +226,27 @@ export function MonacoEditor({ value, onChange, fileName, projectId, onSelection
     };
   }, []);
 
+  // Expose insertText for parent components (e.g. image upload)
+  useImperativeHandle(ref, () => ({
+    insertText: (text: string) => {
+      const editor = editorRef.current;
+      if (!editor) return;
+      const position = editor.getPosition() || { lineNumber: 1, column: 1 };
+      editor.executeEdits('insert-text', [
+        {
+          range: {
+            startLineNumber: position.lineNumber,
+            startColumn: position.column,
+            endLineNumber: position.lineNumber,
+            endColumn: position.column,
+          },
+          text,
+        },
+      ]);
+      editor.focus();
+    },
+  }));
+
   return (
     <Box sx={{ height: '100%', position: 'relative' }}>
       <style>
@@ -324,7 +350,7 @@ export function MonacoEditor({ value, onChange, fileName, projectId, onSelection
       )}
     </Box>
   );
-}
+});
 
 function getLanguageFromFileName(fileName: string): string {
   const ext = fileName.split('.').pop()?.toLowerCase();

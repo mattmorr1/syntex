@@ -34,6 +34,7 @@ import {
   Settings,
   ChevronLeft,
   ChevronRight,
+  Image as ImageIcon,
 } from '@mui/icons-material';
 import { Panel, PanelGroup, PanelResizeHandle, ImperativePanelHandle } from 'react-resizable-panels';
 import { useThemeStore } from '../../store/themeStore';
@@ -41,7 +42,7 @@ import { useSettingsStore } from '../../store/settingsStore';
 import { useEditorStore } from '../../store/editorStore';
 import { useAuth } from '../../hooks/useAuth';
 import { api } from '../../services/api';
-import { MonacoEditor, EditorSelection } from './MonacoEditor';
+import { MonacoEditor, MonacoEditorHandle, EditorSelection } from './MonacoEditor';
 import { AgentPanel } from '../ai/AgentPanel';
 import { PdfViewer } from './PdfViewer';
 
@@ -50,6 +51,9 @@ const FILE_ICONS: Record<string, React.ReactNode> = {
   bib: <MenuBook fontSize="small" />,
   cls: <Code fontSize="small" />,
   sty: <Code fontSize="small" />,
+  png: <ImageIcon fontSize="small" />,
+  jpg: <ImageIcon fontSize="small" />,
+  jpeg: <ImageIcon fontSize="small" />,
 };
 
 export function Editor() {
@@ -93,6 +97,8 @@ export function Editor() {
   const [titleValue, setTitleValue] = useState('');
   const titleInputRef = useRef<HTMLInputElement>(null);
   const filePanelRef = useRef<ImperativePanelHandle>(null);
+  const monacoEditorRef = useRef<MonacoEditorHandle>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const currentProjectRef = useRef(currentProject);
   currentProjectRef.current = currentProject;
@@ -156,7 +162,13 @@ export function Editor() {
     setCompileError(null);
     try {
       const result = await api.compile(currentProject.id, currentProject.mainFile, currentProject.files);
-      if (result.pdf_url) setPdfUrl(result.pdf_url);
+      if (result.pdf_url) {
+        setPdfUrl(result.pdf_url);
+      } else {
+        const msg = result.error || 'Compilation failed';
+        setCompileError(msg);
+        setSnackbar({ open: true, message: 'Compilation failed', severity: 'error' });
+      }
     } catch (err: any) {
       setCompileError(err.message);
       setSnackbar({ open: true, message: err.message, severity: 'error' });
@@ -193,6 +205,47 @@ export function Editor() {
     removeFile(fileName);
     setFileMenuAnchor(null);
     setSnackbar({ open: true, message: 'File deleted', severity: 'success' });
+  };
+
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const imgFile = e.target.files?.[0];
+    if (!imgFile) return;
+    e.target.value = '';
+
+    const ext = imgFile.name.split('.').pop()?.toLowerCase() || 'png';
+    const allowedExts = ['png', 'jpg', 'jpeg'];
+    if (!allowedExts.includes(ext)) {
+      setSnackbar({ open: true, message: 'Only PNG and JPG images are supported', severity: 'error' });
+      return;
+    }
+
+    // Use original filename, deduplicate if already in project
+    let fileName = imgFile.name;
+    const existingNames = new Set(currentProject?.files.map((f: { name: string }) => f.name) ?? []);
+    if (existingNames.has(fileName)) {
+      const base = fileName.replace(/\.[^.]+$/, '');
+      fileName = `${base}_${Date.now()}.${ext}`;
+    }
+
+    // Read as base64 (strip data URL prefix)
+    const base64 = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result as string;
+        resolve(result.split(',')[1]);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(imgFile);
+    });
+
+    addFile({ name: fileName, content: base64, type: ext as 'png' | 'jpg' });
+
+    // Insert \includegraphics snippet at cursor in currently active .tex file
+    const snippet = `\n\\begin{figure}[htbp]\n  \\centering\n  \\includegraphics[width=0.8\\textwidth]{${fileName}}\n  \\caption{Caption here}\n  \\label{fig:${fileName.replace(/\.[^.]+$/, '')}}\n\\end{figure}\n`;
+    monacoEditorRef.current?.insertText(snippet);
+
+    setAddMenuAnchor(null);
+    setSnackbar({ open: true, message: `Image "${fileName}" added`, severity: 'success' });
   };
 
   const handleTitleSave = async () => {
@@ -254,6 +307,9 @@ export function Editor() {
     return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current); };
   }, [activeFileContent, unsavedChanges]);
 
+  // Image files are binary — skip Monaco for them
+  const isImageFile = (name: string) => /\.(png|jpe?g)$/i.test(name);
+
   if (loading) {
     return (
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', bgcolor: 'background.default' }}>
@@ -277,6 +333,15 @@ export function Editor() {
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100vh', bgcolor: 'background.default' }}>
+      {/* Hidden image file input */}
+      <input
+        ref={imageInputRef}
+        type="file"
+        accept="image/png,image/jpeg"
+        style={{ display: 'none' }}
+        onChange={handleImageUpload}
+      />
+
       {/* Top Header */}
       <Box sx={{
         height: 40,
@@ -494,6 +559,9 @@ export function Editor() {
               <MenuItem onClick={() => handleAddFile('tex')} sx={{ fontSize: 12 }}>LaTeX (.tex)</MenuItem>
               <MenuItem onClick={() => handleAddFile('bib')} sx={{ fontSize: 12 }}>Bibliography (.bib)</MenuItem>
               <MenuItem onClick={() => handleAddFile('cls')} sx={{ fontSize: 12 }}>Class (.cls)</MenuItem>
+              <MenuItem onClick={() => { imageInputRef.current?.click(); setAddMenuAnchor(null); }} sx={{ fontSize: 12 }}>
+                <ImageIcon sx={{ mr: 1, fontSize: 14 }} /> Image (.png / .jpg)
+              </MenuItem>
             </Menu>
 
             <Menu anchorEl={fileMenuAnchor?.el} open={Boolean(fileMenuAnchor)} onClose={() => setFileMenuAnchor(null)}>
@@ -519,15 +587,24 @@ export function Editor() {
               overflow: 'hidden',
             }}>
               <Box sx={{ height: '100%', overflow: 'hidden', bgcolor: editorBg }}>
-                {activeFile && (
+                {activeFile && isImageFile(activeFile) ? (
+                  <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 1.5 }}>
+                    <ImageIcon sx={{ fontSize: 40, color: 'text.disabled' }} />
+                    <Typography sx={{ fontSize: 12, color: 'text.secondary' }}>{activeFile}</Typography>
+                    <Typography sx={{ fontSize: 11, color: 'text.disabled' }}>
+                      Binary image — use <code>\includegraphics{`{${activeFile}}`}</code> in your .tex file
+                    </Typography>
+                  </Box>
+                ) : activeFile ? (
                   <MonacoEditor
+                    ref={monacoEditorRef}
                     value={activeFileContent}
                     onChange={(value) => updateFileContent(activeFile, value || '')}
                     fileName={activeFile}
                     projectId={currentProject?.id || ''}
                     onSelectionChange={setEditorSelection}
                   />
-                )}
+                ) : null}
               </Box>
             </Box>
           </Panel>

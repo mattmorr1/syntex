@@ -362,6 +362,52 @@ Return ONLY the completion text, nothing else. No explanations."""
         text, tokens = await self._call_api(FLASH_MODEL, prompt, temperature=0.1, max_tokens=100)
         return text.strip(), tokens
     
+    async def _extract_content_inventory(
+        self, content: str, api_key: Optional[str]
+    ) -> str:
+        """
+        ReAct step 1 — Reason about what the document contains.
+        Returns a structured checklist of every technical element that must
+        appear verbatim in the LaTeX output.
+        """
+        prompt = (
+            "You are auditing an academic document before typesetting it in LaTeX.\n"
+            "List EVERY technical element that must be reproduced exactly:\n\n"
+            "1. EQUATIONS — number, notation, and full formula\n"
+            "2. TABLES — title, all column headers, all data rows\n"
+            "3. MODELS — every model name and specification (e.g. AR(p), GARCH(1,1))\n"
+            "4. STATISTICS — every reported coefficient, p-value, t-stat, R², AIC, etc.\n"
+            "5. SECTIONS — every heading and subheading in order\n"
+            "6. ALGORITHMS / PROOFS — any pseudocode or step-by-step derivations\n\n"
+            "Be EXHAUSTIVE. Missing items will cause the LaTeX to be incomplete.\n\n"
+            "DOCUMENT:\n"
+            f"{content[:25000]}\n\n"
+            "OUTPUT: structured inventory only."
+        )
+        text, _ = await self._call_api(
+            FLASH_MODEL, prompt, temperature=0.0, max_tokens=3000, api_key=api_key
+        )
+        return text
+
+    @staticmethod
+    def _extract_cls_commands(cls_content: str) -> str:
+        """Pull out user-facing command names from a .cls file for the prompt."""
+        commands = []
+        for line in cls_content.splitlines():
+            line = line.strip()
+            # \newcommand\Foo or \long\def\Foo or \def\Foo (not \@internal)
+            m = re.match(r'\\(?:long\\)?(?:newcommand|def)\\([A-Z][A-Za-z]+)', line)
+            if m:
+                commands.append('\\' + m.group(1))
+        # deduplicate, keep order
+        seen = set()
+        unique = []
+        for c in commands:
+            if c not in seen:
+                seen.add(c)
+                unique.append(c)
+        return ', '.join(unique[:20]) if unique else ''
+
     async def generate_document(
         self,
         content: str,
@@ -370,30 +416,77 @@ Return ONLY the completion text, nothing else. No explanations."""
         api_key: Optional[str] = None,
         custom_prompt: Optional[str] = None,
         custom_preamble: Optional[str] = None,
-        images: Optional[List[str]] = None
+        images: Optional[List[str]] = None,
+        custom_cls_content: Optional[str] = None
     ) -> Tuple[str, int]:
         theme_desc = custom_theme if theme == "custom" else self._get_theme_description(theme)
 
-        # Truncate content if too long
-        content = content[:8000] if len(content) > 8000 else content
+        # Allow up to 40 000 chars — roughly 20 pages of academic text
+        content = content[:40000]
 
-        initial_prompt = f"""Transform and convert the following content into a LaTeX document ({theme_desc}).
+        cls_instruction = ""
+        if custom_cls_content:
+            cls_commands = self._extract_cls_commands(custom_cls_content)
+            cls_instruction = (
+                "A custom LaTeX class file (custom.cls) has been provided.\n"
+                "You MUST use \\documentclass{custom} as the document class.\n"
+                "Do NOT load packages already included by the class or redefine its commands.\n"
+            )
+            if cls_commands:
+                cls_instruction += f"Class-specific commands available: {cls_commands}\n"
+            cls_instruction += (
+                "Class file (first 2500 chars):\n"
+                "---\n"
+                f"{custom_cls_content[:2500]}\n"
+                "---\n"
+            )
 
-IMPORTANT: You are reformatting and structuring user-provided content into LaTeX format.
-The user owns this content and is authorized to convert it. Focus on document structure and LaTeX markup.
+        extra_instructions = ("Additional instructions: " + custom_prompt + "\n") if custom_prompt else ""
+        extra_preamble = ("Extra preamble: " + custom_preamble + "\n") if custom_preamble else ""
+        images_note = "Images supplied — include each with \\includegraphics in a figure environment.\n" if images else ""
 
-Content to transform:
-{content}
+        # ReAct step 1 — extract content inventory for substantial documents
+        inventory = ""
+        if len(content) > 3000:
+            try:
+                inventory = await self._extract_content_inventory(content, api_key)
+                print(f"generate_document inventory extracted ({len(inventory)} chars)")
+            except Exception as inv_err:
+                print(f"generate_document inventory extraction failed: {inv_err}")
 
-{f'Additional instructions: {custom_prompt}' if custom_prompt else ''}
-{f'Preamble to include: {custom_preamble}' if custom_preamble else ''}
-{'Reference images provided - incorporate visual content.' if images else ''}
+        inventory_block = (
+            "CONTENT CHECKLIST (every item below MUST appear in your output):\n"
+            "---\n"
+            f"{inventory}\n"
+            "---\n\n"
+        ) if inventory else ""
 
-Output COMPLETE compilable LaTeX. You MUST include \\end{{document}} at the end:"""
+        initial_prompt = (
+            f"You are a LaTeX typesetter. Convert the following document into a complete, "
+            f"compilable LaTeX file using {theme_desc} style.\n\n"
+            "RULES:\n"
+            "- OUTPUT ONLY LATEX CODE — no explanation, no markdown fences.\n"
+            "- REPRODUCE ALL CONTENT VERBATIM: every equation, table, model, statistic, "
+            "and result must appear exactly as in the source — do not summarise or omit.\n"
+            "- Transcribe all equations into LaTeX math notation ($...$ or \\begin{equation}).\n"
+            "- Reproduce every table completely using tabular or booktabs.\n"
+            "- Keep all section headings in their original order.\n"
+            "- Prose may be lightly reformatted for LaTeX style but must be complete.\n"
+            "- End the file with \\end{document}.\n\n"
+            f"{inventory_block}"
+            f"{cls_instruction}"
+            f"{extra_instructions}"
+            f"{extra_preamble}"
+            f"{images_note}"
+            "\nSOURCE DOCUMENT:\n"
+            f"{content}\n\n"
+            "BEGIN LATEX OUTPUT NOW:\n"
+        )
 
         accumulated = ""
         total_tokens = 0
-        max_iterations = 6
+        max_iterations = 8
+        used_fallback_prompt = False
 
         for iteration in range(max_iterations):
             try:
@@ -403,17 +496,17 @@ Output COMPLETE compilable LaTeX. You MUST include \\end{{document}} at the end:
                 else:
                     tail = accumulated[-800:]
                     current_prompt = (
-                        f"Continue the LaTeX document from exactly where it was cut off.\n\n"
-                        f"The document so far ends with:\n{tail}\n\n"
-                        f"Output ONLY the continuation starting from where it ends. "
-                        f"Do NOT repeat any content. Continue until \\end{{document}}:"
+                        "Continue the LaTeX document from exactly where it was cut off.\n\n"
+                        f"Document so far ends with:\n{tail}\n\n"
+                        "Output ONLY the continuation. Do NOT repeat any content. "
+                        "Continue until \\end{document}:"
                     )
                     current_images = None
 
                 text, tokens = await self._call_api(
                     PRO_MODEL, current_prompt,
-                    temperature=0.1 if iteration > 0 else 0.2,
-                    max_tokens=4096,
+                    temperature=0.1 if iteration > 0 else 0.15,
+                    max_tokens=8192,
                     api_key=api_key,
                     images=current_images
                 )
@@ -424,7 +517,7 @@ Output COMPLETE compilable LaTeX. You MUST include \\end{{document}} at the end:
                 complete = r"\end{document}" in accumulated
                 print(f"generate_document iteration {iteration + 1}: {tokens} tokens, complete={complete}")
 
-                if r"\end{document}" in accumulated:
+                if complete:
                     break
 
             except TokenLimitError as e:
@@ -432,10 +525,57 @@ Output COMPLETE compilable LaTeX. You MUST include \\end{{document}} at the end:
                 accumulated += chunk
                 total_tokens += e.tokens
                 print(f"generate_document iteration {iteration + 1} truncated at {e.tokens} tokens, continuing...")
-
                 if r"\end{document}" in accumulated:
                     break
-                # loop continues to next iteration
+
+            except ContentBlockedError as e:
+                total_tokens += 0
+                print(f"generate_document ContentBlockedError (reason={e.reason}) on iteration {iteration + 1}")
+                if not used_fallback_prompt and iteration == 0:
+                    used_fallback_prompt = True
+                    excerpt = content[:3000]
+                    initial_prompt = (
+                        f"You are a LaTeX typesetter. Create a complete LaTeX document "
+                        f"({theme_desc} style) from the academic paper below.\n\n"
+                        "RULES:\n"
+                        "- OUTPUT ONLY LATEX CODE.\n"
+                        "- Reproduce ALL equations, tables, models, and statistics exactly.\n"
+                        "- Keep all section headings and structure intact.\n"
+                        "- End the file with \\end{document}.\n\n"
+                        f"{inventory_block}"
+                        f"{cls_instruction}"
+                        f"{extra_instructions}"
+                        "\nPAPER (first portion):\n"
+                        f"{excerpt}\n\n"
+                        "BEGIN LATEX OUTPUT NOW:\n"
+                    )
+                    current_prompt = initial_prompt
+                    # retry immediately (don't increment iteration)
+                    try:
+                        text, tokens = await self._call_api(
+                            PRO_MODEL, current_prompt,
+                            temperature=0.15,
+                            max_tokens=8192,
+                            api_key=api_key,
+                            images=None,
+                        )
+                        chunk = self._strip_code_fences(text)
+                        accumulated += chunk
+                        total_tokens += tokens
+                        print(f"generate_document fallback prompt: {tokens} tokens")
+                        if r"\end{document}" in accumulated:
+                            break
+                    except (ContentBlockedError, TokenLimitError) as inner_e:
+                        if isinstance(inner_e, TokenLimitError):
+                            accumulated += self._strip_code_fences(inner_e.partial_text)
+                            total_tokens += inner_e.tokens
+                        else:
+                            raise ContentBlockedError(
+                                f"Content blocked even after restructuring retry: {inner_e}",
+                                reason=getattr(inner_e, 'reason', 'UNKNOWN')
+                            )
+                else:
+                    raise
 
         if r"\end{document}" not in accumulated:
             # Ensure document is closed even if we ran out of iterations
