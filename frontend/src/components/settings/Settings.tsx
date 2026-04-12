@@ -24,7 +24,7 @@ import { useAuth } from '../../hooks/useAuth';
 export function Settings() {
   const navigate = useNavigate();
   const { mode, toggleTheme } = useThemeStore();
-  const { aiModel, setAiModel } = useSettingsStore();
+  const { aiModel, setAiModel, generationMaxTokens, setGenerationMaxTokens } = useSettingsStore();
   const { user, resetPassword } = useAuth();
 
   const [resetLoading, setResetLoading] = useState(false);
@@ -143,6 +143,22 @@ export function Settings() {
               >
                 <ToggleButton value="flash" sx={{ px: 1.5, py: 0.5, fontSize: 11 }}>Flash</ToggleButton>
                 <ToggleButton value="pro" sx={{ px: 1.5, py: 0.5, fontSize: 11 }}>Pro</ToggleButton>
+              </ToggleButtonGroup>
+            }
+          />
+          <Row
+            label="Generation max tokens"
+            description="Maximum output length for document generation"
+            control={
+              <ToggleButtonGroup
+                value={generationMaxTokens}
+                exclusive
+                onChange={(_, val) => { if (val) setGenerationMaxTokens(val); }}
+                size="small"
+              >
+                <ToggleButton value={8192} sx={{ px: 1.5, py: 0.5, fontSize: 11 }}>8k</ToggleButton>
+                <ToggleButton value={32768} sx={{ px: 1.5, py: 0.5, fontSize: 11 }}>32k</ToggleButton>
+                <ToggleButton value={65536} sx={{ px: 1.5, py: 0.5, fontSize: 11 }}>65k</ToggleButton>
               </ToggleButtonGroup>
             }
           />

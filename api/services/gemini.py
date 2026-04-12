@@ -186,7 +186,7 @@ class GeminiService:
         self,
         model: str,
         prompt: str,
-        temperature: float = 0.2,
+        temperature: float = 0.1,
         max_tokens: int = 2048,
         api_key: Optional[str] = None,
         images: Optional[List[str]] = None,
@@ -285,7 +285,7 @@ class GeminiService:
         self,
         model: str,
         prompt: str,
-        temperature: float = 0.2,
+        temperature: float = 0.1,
         max_tokens: int = 2048,
         api_key: Optional[str] = None,
         images: Optional[List[str]] = None,
@@ -417,7 +417,8 @@ Return ONLY the completion text, nothing else. No explanations."""
         custom_prompt: Optional[str] = None,
         custom_preamble: Optional[str] = None,
         images: Optional[List[str]] = None,
-        custom_cls_content: Optional[str] = None
+        custom_cls_content: Optional[str] = None,
+        max_tokens: int = 65536
     ) -> Tuple[str, int]:
         theme_desc = custom_theme if theme == "custom" else self._get_theme_description(theme)
 
@@ -506,7 +507,7 @@ Return ONLY the completion text, nothing else. No explanations."""
                 text, tokens = await self._call_api(
                     PRO_MODEL, current_prompt,
                     temperature=0.1 if iteration > 0 else 0.15,
-                    max_tokens=65536,
+                    max_tokens=max_tokens,
                     api_key=api_key,
                     images=current_images
                 )
@@ -555,7 +556,7 @@ Return ONLY the completion text, nothing else. No explanations."""
                         text, tokens = await self._call_api(
                             PRO_MODEL, current_prompt,
                             temperature=0.15,
-                            max_tokens=65536,
+                            max_tokens=max_tokens,
                             api_key=api_key,
                             images=None,
                         )

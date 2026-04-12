@@ -209,13 +209,14 @@ export const api = {
     request<void>(`/admin/invites/${code}`, { method: 'DELETE' }),
 
   // Upload
-  uploadFile: async (file: File, theme: string, customTheme?: string, clsContent?: string) => {
+  uploadFile: async (file: File, theme: string, customTheme?: string, clsContent?: string, maxTokens?: number) => {
     const token = useAuthStore.getState().token;
     const formData = new FormData();
     formData.append('file', file);
     formData.append('theme', theme);
     if (customTheme) formData.append('custom_theme', customTheme);
     if (clsContent) formData.append('custom_cls', clsContent);
+    if (maxTokens) formData.append('max_tokens', String(maxTokens));
 
     const response = await fetch(`${API_BASE}/upload`, {
       method: 'POST',
