@@ -29,6 +29,11 @@ async function request<T>(
     headers,
   });
 
+  if (response.status === 401) {
+    useAuthStore.getState().logout();
+    throw new Error('Session expired. Please sign in again.');
+  }
+
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: 'Request failed' }));
     throw new Error(error.detail || 'Request failed');
@@ -109,7 +114,7 @@ export const api = {
 
   // Compile
   compile: (projectId: string, mainFile: string, files: any[]) =>
-    request<{ pdf_url: string }>('/compile', {
+    request<{ pdf_url: string | null; error?: string }>('/compile', {
       method: 'POST',
       body: JSON.stringify({ project_id: projectId, main_file: mainFile, files }),
     }),
@@ -120,34 +125,6 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ context, cursor_position: cursor, file_name: fileName }),
       signal,
-    }),
-
-  chat: (projectId: string, message: string, context: string, model?: string) =>
-    request<{ response: string; tokens: number }>('/ai/chat', {
-      method: 'POST',
-      body: JSON.stringify({ project_id: projectId, message, context, model }),
-    }),
-
-  agentEdit: (
-    projectId: string,
-    instruction: string,
-    document: string,
-    model?: string,
-    selection?: { text: string; start_line: number; end_line: number },
-  ) =>
-    request<{
-      explanation: string;
-      changes: Array<{
-        start_line: number;
-        end_line: number;
-        original: string;
-        replacement: string;
-        reason: string;
-      }>;
-      tokens: number;
-    }>('/ai/agent-edit', {
-      method: 'POST',
-      body: JSON.stringify({ project_id: projectId, instruction, document, model, selection }),
     }),
 
   agentEditStream: async (
@@ -169,6 +146,11 @@ export const api = {
       },
       body: JSON.stringify({ project_id: projectId, instruction, document, model, selection }),
     });
+
+    if (response.status === 401) {
+      useAuthStore.getState().logout();
+      throw new Error('Session expired. Please sign in again.');
+    }
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({ detail: 'Request failed' }));
@@ -206,9 +188,6 @@ export const api = {
     }
   },
 
-  getChatHistory: (projectId: string) =>
-    request<any[]>(`/ai/chat-history?project_id=${projectId}`),
-
   // Admin
   getUsers: () => request<any[]>('/admin/users'),
   
@@ -230,12 +209,13 @@ export const api = {
     request<void>(`/admin/invites/${code}`, { method: 'DELETE' }),
 
   // Upload
-  uploadFile: async (file: File, theme: string, customTheme?: string) => {
+  uploadFile: async (file: File, theme: string, customTheme?: string, clsContent?: string) => {
     const token = useAuthStore.getState().token;
     const formData = new FormData();
     formData.append('file', file);
     formData.append('theme', theme);
     if (customTheme) formData.append('custom_theme', customTheme);
+    if (clsContent) formData.append('custom_cls', clsContent);
 
     const response = await fetch(`${API_BASE}/upload`, {
       method: 'POST',

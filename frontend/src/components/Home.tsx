@@ -47,6 +47,7 @@ export function Home() {
   const navigate = useNavigate();
   const { mode } = useThemeStore();
   const [file, setFile] = useState<File | null>(null);
+  const [clsFile, setClsFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [error, setError] = useState('');
@@ -119,6 +120,11 @@ export function Home() {
     }
   };
 
+  const handleClsSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selected = e.target.files?.[0];
+    if (selected) setClsFile(selected);
+  };
+
   const handleUpload = async () => {
     if (!file) return;
 
@@ -127,11 +133,15 @@ export function Home() {
     setError('');
 
     const progressInterval = setInterval(() => {
-      setUploadProgress((prev) => Math.min(prev + 10, 90));
-    }, 200);
+      setUploadProgress((prev) => Math.min(prev + 8, 90));
+    }, 500);
 
     try {
-      const result = await api.uploadFile(file, 'report', undefined);
+      let clsContent: string | undefined;
+      if (clsFile) {
+        clsContent = await clsFile.text();
+      }
+      const result = await api.uploadFile(file, 'report', undefined, clsContent);
       setUploadProgress(100);
       clearInterval(progressInterval);
       navigate(`/editor/${result.project_id}`);
@@ -293,31 +303,72 @@ export function Home() {
           {file && (
             <Box sx={{
               mt: 2,
-              p: 1.5,
               border: `1px solid ${purpleBorder}`,
               borderRadius: '8px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
               bgcolor: surfaceBg,
+              overflow: 'hidden',
             }}>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <Description sx={{ fontSize: 18, color: 'primary.main' }} />
-                <Typography sx={{ fontSize: 12 }}>{file.name}</Typography>
+              {/* Document row */}
+              <Box sx={{
+                p: 1.5,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <Description sx={{ fontSize: 18, color: 'primary.main' }} />
+                  <Typography sx={{ fontSize: 12 }}>{file.name}</Typography>
+                </Box>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <Button
+                    size="small"
+                    variant="contained"
+                    onClick={handleUpload}
+                    disabled={uploading}
+                    sx={{ fontSize: 11, py: 0.5 }}
+                  >
+                    Convert
+                  </Button>
+                  <IconButton size="small" onClick={() => { setFile(null); setClsFile(null); }} sx={{ p: 0.25 }}>
+                    <Close sx={{ fontSize: 16 }} />
+                  </IconButton>
+                </Box>
               </Box>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <Button
-                  size="small"
-                  variant="contained"
-                  onClick={handleUpload}
-                  disabled={uploading}
-                  sx={{ fontSize: 11, py: 0.5 }}
-                >
-                  Convert
-                </Button>
-                <IconButton size="small" onClick={() => setFile(null)} sx={{ p: 0.25 }}>
-                  <Close sx={{ fontSize: 16 }} />
-                </IconButton>
+
+              {/* Optional .cls template row */}
+              <Box sx={{
+                px: 1.5,
+                pb: 1.5,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1,
+              }}>
+                <input
+                  id="cls-input"
+                  type="file"
+                  accept=".cls,.sty"
+                  onChange={handleClsSelect}
+                  style={{ display: 'none' }}
+                />
+                {clsFile ? (
+                  <>
+                    <Typography sx={{ fontSize: 11, color: 'text.secondary', flex: 1 }}>
+                      Template: {clsFile.name}
+                    </Typography>
+                    <IconButton size="small" onClick={() => setClsFile(null)} sx={{ p: 0.25 }}>
+                      <Close sx={{ fontSize: 14 }} />
+                    </IconButton>
+                  </>
+                ) : (
+                  <Button
+                    size="small"
+                    variant="text"
+                    onClick={() => document.getElementById('cls-input')?.click()}
+                    sx={{ fontSize: 11, color: 'text.secondary', p: 0, minWidth: 0, textTransform: 'none' }}
+                  >
+                    + attach .cls template (optional)
+                  </Button>
+                )}
               </Box>
             </Box>
           )}
