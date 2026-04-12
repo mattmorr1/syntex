@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from 'react';
+import { useSettingsStore } from '../store/settingsStore';
 import { useNavigate } from 'react-router-dom';
 import {
   Box,
@@ -46,6 +47,7 @@ const TEMPLATES = [
 export function Home() {
   const navigate = useNavigate();
   const { mode } = useThemeStore();
+  const { generationMaxTokens } = useSettingsStore();
   const [file, setFile] = useState<File | null>(null);
   const [clsFile, setClsFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -141,7 +143,7 @@ export function Home() {
       if (clsFile) {
         clsContent = await clsFile.text();
       }
-      const result = await api.uploadFile(file, 'report', undefined, clsContent);
+      const result = await api.uploadFile(file, 'report', undefined, clsContent, generationMaxTokens);
       setUploadProgress(100);
       clearInterval(progressInterval);
       navigate(`/editor/${result.project_id}`);

@@ -127,6 +127,7 @@ async def upload_file(
     custom_cls: Optional[str] = Form(None),
     custom_preamble: Optional[str] = Form(None),
     images: Optional[str] = Form(None),  # JSON array of base64 images
+    max_tokens: Optional[int] = Form(None),
     user: dict = Depends(get_current_user)
 ):
     if not file.filename.endswith(('.docx', '.doc', '.pdf')):
@@ -220,6 +221,7 @@ async def upload_file(
                 custom_preamble=custom_preamble,
                 images=extracted_images or None,
                 custom_cls_content=custom_cls if custom_cls and custom_cls.strip() else None,
+                max_tokens=max_tokens if max_tokens else 65536,
             )
         except Exception as gen_err:
             logger.error(f"Gemini generation failed ({type(gen_err).__name__}): {gen_err}")
