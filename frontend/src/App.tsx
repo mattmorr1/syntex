@@ -1,8 +1,9 @@
-import { useMemo } from 'react';
+import { useMemo, useEffect } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { ThemeProvider, CssBaseline, Box, CircularProgress } from '@mui/material';
 import { useThemeStore } from './store/themeStore';
 import { useAuthStore } from './store/authStore';
+import { firebaseEnabled, onAuthChange } from './services/firebase';
 import { darkTheme, lightTheme } from './themes/theme';
 
 import { Layout } from './components/common/Layout';
@@ -26,7 +27,7 @@ function ProtectedRoute({ children, adminOnly = false }: { children: React.React
     );
   }
   
-  if (!isAuthenticated) {
+  if (!isAuthenticated || !user) {
     return <Navigate to="/login" replace />;
   }
   
@@ -40,6 +41,18 @@ function ProtectedRoute({ children, adminOnly = false }: { children: React.React
 function App() {
   const { mode } = useThemeStore();
   const theme = useMemo(() => (mode === 'dark' ? darkTheme : lightTheme), [mode]);
+
+  // Sync Firebase auth state → clear stale localStorage session on sign-out
+  useEffect(() => {
+    if (!firebaseEnabled) return;
+    const unsubscribe = onAuthChange((firebaseUser) => {
+      if (!firebaseUser) {
+        const store = useAuthStore.getState();
+        if (store.isAuthenticated) store.logout();
+      }
+    });
+    return unsubscribe;
+  }, []);
 
   return (
     <ThemeProvider theme={theme}>

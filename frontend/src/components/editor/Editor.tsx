@@ -16,8 +16,6 @@ import {
   ListItemText,
   Menu,
   MenuItem,
-  TextField,
-  InputAdornment,
   Avatar,
 } from '@mui/material';
 import {
@@ -28,18 +26,16 @@ import {
   Code,
   MenuBook,
   Download,
-  Home,
   Chat,
   ZoomIn,
   ZoomOut,
-  Check,
-  Close,
-  Edit,
   Delete,
   MoreVert,
   Settings,
+  ChevronLeft,
+  ChevronRight,
 } from '@mui/icons-material';
-import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
+import { Panel, PanelGroup, PanelResizeHandle, ImperativePanelHandle } from 'react-resizable-panels';
 import { useThemeStore } from '../../store/themeStore';
 import { useSettingsStore } from '../../store/settingsStore';
 import { useEditorStore } from '../../store/editorStore';
@@ -60,7 +56,7 @@ export function Editor() {
   const { projectId } = useParams();
   const navigate = useNavigate();
   const { mode } = useThemeStore();
-  const { aiModel, toggleAiModel } = useSettingsStore();
+  const { aiModel } = useSettingsStore();
   const { user } = useAuth();
   const {
     currentProject,
@@ -83,8 +79,8 @@ export function Editor() {
   } = useEditorStore();
 
   const [loading, setLoading] = useState(true);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [aiPanelOpen, setAiPanelOpen] = useState(true);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [aiPanelOpen, setAiPanelOpen] = useState(false);
   const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: 'success' | 'error' }>({
     open: false,
     message: '',
@@ -96,7 +92,7 @@ export function Editor() {
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleValue, setTitleValue] = useState('');
   const titleInputRef = useRef<HTMLInputElement>(null);
-  const pdfViewerRef = useRef<import('./PdfViewer').PdfViewerHandle>(null);
+  const filePanelRef = useRef<ImperativePanelHandle>(null);
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const currentProjectRef = useRef(currentProject);
   currentProjectRef.current = currentProject;
@@ -106,14 +102,11 @@ export function Editor() {
   const purpleBorder = isDark ? '#262626' : '#e4e4e7';
   const accentBorder = isDark ? '#2d2d2d' : '#e4e4e7';
   const surfaceBg = isDark ? '#121212' : '#ffffff';
-  const surfaceActive = isDark ? '#1e1e1e' : '#f4f4f5';
   const editorBg = isDark ? '#0a0a0a' : '#fafafa';
   const pdfBg = isDark ? '#525659' : '#e4e4e7';
 
   useEffect(() => {
-    if (projectId) {
-      loadProject(projectId);
-    }
+    if (projectId) loadProject(projectId);
   }, [projectId]);
 
   useEffect(() => {
@@ -162,14 +155,8 @@ export function Editor() {
     setCompiling(true);
     setCompileError(null);
     try {
-      const result = await api.compile(
-        currentProject.id,
-        currentProject.mainFile,
-        currentProject.files
-      );
-      if (result.pdf_url) {
-        setPdfUrl(result.pdf_url);
-      }
+      const result = await api.compile(currentProject.id, currentProject.mainFile, currentProject.files);
+      if (result.pdf_url) setPdfUrl(result.pdf_url);
     } catch (err: any) {
       setCompileError(err.message);
       setSnackbar({ open: true, message: err.message, severity: 'error' });
@@ -223,11 +210,19 @@ export function Editor() {
     }
   };
 
-  const handleTitleKeyDown = (e: React.KeyboardEvent) => {
+  const handleTitleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') handleTitleSave();
     else if (e.key === 'Escape') {
       setTitleValue(currentProject?.name || '');
       setEditingTitle(false);
+    }
+  };
+
+  const toggleSidebar = () => {
+    if (sidebarCollapsed) {
+      filePanelRef.current?.expand();
+    } else {
+      filePanelRef.current?.collapse();
     }
   };
 
@@ -242,10 +237,8 @@ export function Editor() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [handleSave, handleCompile]);
 
-  // Auto-save: 3 seconds after the last content change
   useEffect(() => {
     if (!unsavedChanges) return;
-
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
     autoSaveTimerRef.current = setTimeout(async () => {
       const proj = currentProjectRef.current;
@@ -255,13 +248,10 @@ export function Editor() {
         setUnsavedChanges(false);
         if (result?.updated_at) setUpdatedAt(result.updated_at);
       } catch {
-        // Silently fail auto-save; user can retry manually
+        // silent
       }
     }, 3000);
-
-    return () => {
-      if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
-    };
+    return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current); };
   }, [activeFileContent, unsavedChanges]);
 
   if (loading) {
@@ -275,13 +265,15 @@ export function Editor() {
   const resizeHandle = (
     <PanelResizeHandle style={{ width: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'col-resize' }}>
       <Box sx={{
-        width: 3, height: 32, borderRadius: 2,
+        width: '3px', height: '32px', borderRadius: 2,
         bgcolor: 'rgba(255,255,255,0.08)',
         transition: 'background 0.15s',
         '&:hover': { bgcolor: 'rgba(255,255,255,0.3)' },
       }} />
     </PanelResizeHandle>
   );
+
+  const titleText = currentProject?.name || 'Untitled Document';
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100vh', bgcolor: 'background.default' }}>
@@ -295,64 +287,61 @@ export function Editor() {
         justifyContent: 'space-between',
         px: 1.5,
         flexShrink: 0,
+        minWidth: 0,
       }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+        {/* Left: Logo + title */}
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0, overflow: 'hidden' }}>
+          {/* Logo → home */}
+          <Box
+            sx={{ display: 'flex', alignItems: 'center', gap: 0.75, cursor: 'pointer', flexShrink: 0, '&:hover': { opacity: 0.75 } }}
+            onClick={() => navigate('/')}
+          >
             <SyntexLogo size="sm" />
             <Typography sx={{ fontWeight: 600, fontSize: 12, letterSpacing: '-0.01em' }}>
               syntex
             </Typography>
           </Box>
 
-          <Box sx={{ width: 1, height: 16, bgcolor: accentBorder }} />
+          {/* Separator */}
+          <Box sx={{ width: '1px', height: '16px', bgcolor: accentBorder, flexShrink: 0 }} />
 
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, fontSize: 11 }}>
-            <Typography
-              sx={{ fontSize: 11, color: 'text.secondary', cursor: 'pointer', '&:hover': { color: 'text.primary' } }}
-              onClick={() => navigate('/')}
+          {/* Editable title */}
+          {editingTitle ? (
+            <input
+              ref={titleInputRef}
+              value={titleValue}
+              onChange={(e) => setTitleValue(e.target.value)}
+              onBlur={handleTitleSave}
+              onKeyDown={handleTitleKeyDown}
+              style={{
+                fontSize: 12,
+                fontWeight: 500,
+                fontFamily: 'inherit',
+                background: 'transparent',
+                border: 'none',
+                borderBottom: `1px solid ${accentBorder}`,
+                outline: 'none',
+                color: 'inherit',
+                padding: '0 2px',
+                lineHeight: '20px',
+                width: `${Math.max(80, titleValue.length * 7.5)}px`,
+                maxWidth: 220,
+              }}
+            />
+          ) : (
+            <Box
+              sx={{ display: 'flex', alignItems: 'center', gap: 0.5, cursor: 'text', minWidth: 0, overflow: 'hidden' }}
+              onClick={() => { setTitleValue(titleText); setEditingTitle(true); }}
             >
-              {currentProject?.name}
-            </Typography>
-            <Typography sx={{ fontSize: 11, color: accentBorder }}>/</Typography>
-            {editingTitle ? (
-              <TextField
-                inputRef={titleInputRef}
-                value={titleValue}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTitleValue(e.target.value)}
-                onBlur={handleTitleSave}
-                onKeyDown={handleTitleKeyDown}
-                size="small"
-                variant="standard"
-                sx={{ '& input': { fontSize: 11, py: 0, fontWeight: 500 }, maxWidth: 200 }}
-                InputProps={{
-                  endAdornment: (
-                    <InputAdornment position="end">
-                      <IconButton size="small" onClick={handleTitleSave} sx={{ p: 0.25 }}>
-                        <Check sx={{ fontSize: 12 }} />
-                      </IconButton>
-                      <IconButton size="small" onClick={() => { setTitleValue(currentProject?.name || ''); setEditingTitle(false); }} sx={{ p: 0.25 }}>
-                        <Close sx={{ fontSize: 12 }} />
-                      </IconButton>
-                    </InputAdornment>
-                  ),
-                }}
-              />
-            ) : (
-              <Box
-                sx={{ display: 'flex', alignItems: 'center', cursor: 'pointer', '&:hover .edit-icon': { opacity: 1 } }}
-                onClick={() => { setTitleValue(currentProject?.name || ''); setEditingTitle(true); }}
-              >
-                <Typography sx={{ fontSize: 11, fontWeight: 500 }}>
-                  {activeFile || 'main.tex'}
-                  {unsavedChanges && <span style={{ opacity: 0.4 }}> *</span>}
-                </Typography>
-                <Edit className="edit-icon" sx={{ fontSize: 10, ml: 0.5, opacity: 0, transition: 'opacity 0.15s' }} />
-              </Box>
-            )}
-          </Box>
+              <Typography sx={{ fontSize: 12, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {titleText}{unsavedChanges ? <span style={{ opacity: 0.4 }}> *</span> : null}
+              </Typography>
+            </Box>
+          )}
         </Box>
 
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+        {/* Right: actions */}
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexShrink: 0, ml: 1 }}>
           <Tooltip title="Compile (Ctrl+B)">
             <Box
               component="button"
@@ -361,14 +350,14 @@ export function Editor() {
               sx={{
                 display: 'flex', alignItems: 'center', gap: 0.75,
                 px: 1.5, py: 0.5, borderRadius: '8px',
-                bgcolor: 'primary.main', color: '#fff', border: 'none',
+                bgcolor: 'primary.main', color: '#000', border: 'none',
                 cursor: 'pointer', fontSize: 11, fontWeight: 500, fontFamily: 'inherit',
-                transition: 'background 0.15s',
-                '&:hover': { bgcolor: 'primary.dark' },
+                transition: 'opacity 0.15s',
+                '&:hover': { opacity: 0.85 },
                 '&:disabled': { opacity: 0.5 },
               }}
             >
-              {isCompiling ? <CircularProgress size={12} sx={{ color: '#fff' }} /> : <PlayArrow sx={{ fontSize: 14 }} />}
+              {isCompiling ? <CircularProgress size={12} sx={{ color: '#000' }} /> : <PlayArrow sx={{ fontSize: 14 }} />}
               Compile
             </Box>
           </Tooltip>
@@ -380,12 +369,7 @@ export function Editor() {
           </Tooltip>
 
           <Tooltip title="Download PDF">
-            <IconButton
-              size="small"
-              onClick={() => window.open(`/download-pdf/${projectId}`)}
-              disabled={!pdfUrl}
-              sx={{ p: 0.5 }}
-            >
+            <IconButton size="small" onClick={() => window.open(`/download-pdf/${projectId}`)} disabled={!pdfUrl} sx={{ p: 0.5 }}>
               <Download sx={{ fontSize: 16 }} />
             </IconButton>
           </Tooltip>
@@ -407,283 +391,246 @@ export function Editor() {
 
       {/* Main Content */}
       <Box sx={{ flex: 1, display: 'flex', overflow: 'hidden', p: 1, gap: 1, bgcolor: 'background.default' }}>
-        {/* Icon Sidebar — fixed width */}
-        <Box sx={{
-          width: 48,
-          bgcolor: surfaceBg,
-          border: `1px solid ${purpleBorder}`,
-          borderRadius: '12px',
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          py: 1.5,
-          gap: 1,
-          flexShrink: 0,
-        }}>
-          <Tooltip title="Files" placement="right">
-            <IconButton
-              size="small"
-              onClick={() => setSidebarOpen(!sidebarOpen)}
-              sx={{ p: 1, color: sidebarOpen ? 'primary.main' : 'text.secondary' }}
-            >
-              <span className="material-symbols-outlined" style={{ fontSize: 20 }}>folder_open</span>
-            </IconButton>
-          </Tooltip>
-          <Tooltip title="Home" placement="right">
-            <IconButton size="small" onClick={() => navigate('/')} sx={{ p: 1, color: 'text.secondary' }}>
-              <Home sx={{ fontSize: 20 }} />
-            </IconButton>
-          </Tooltip>
-          <Tooltip title="Settings" placement="right">
-            <IconButton size="small" onClick={() => navigate('/settings')} sx={{ p: 1, color: 'text.secondary' }}>
-              <Settings sx={{ fontSize: 20 }} />
-            </IconButton>
-          </Tooltip>
-          <Box sx={{ width: 32, height: 1, bgcolor: accentBorder, my: 0.5 }} />
-          <Tooltip title="AI Chat" placement="right">
-            <IconButton
-              size="small"
-              onClick={() => setAiPanelOpen(!aiPanelOpen)}
-              sx={{ p: 1, color: aiPanelOpen ? 'primary.main' : 'text.secondary' }}
-            >
-              <Chat sx={{ fontSize: 20 }} />
-            </IconButton>
-          </Tooltip>
-          <Tooltip title={`Model: ${aiModel === 'pro' ? 'Pro' : 'Flash'} (click to toggle)`} placement="right">
-            <Box
-              onClick={toggleAiModel}
-              sx={{
-                fontSize: 9, fontWeight: 700, cursor: 'pointer',
-                color: aiModel === 'pro' ? 'primary.main' : 'text.secondary',
-                textTransform: 'uppercase', letterSpacing: 0.5, userSelect: 'none',
-              }}
-            >
-              {aiModel}
-            </Box>
-          </Tooltip>
-        </Box>
+        <PanelGroup direction="horizontal" style={{ height: '100%' }}>
 
-        {/* Resizable panel group: file sidebar + editor + pdf + AI */}
-        <Box sx={{ flex: 1, overflow: 'hidden' }}>
-          <PanelGroup direction="horizontal" style={{ height: '100%' }}>
-            {/* File Sidebar Panel */}
-            {sidebarOpen && (
-              <>
-                <Panel defaultSize={14} minSize={8} maxSize={28}>
-                  <Box sx={{
-                    height: '100%',
-                    bgcolor: surfaceBg,
-                    border: `1px solid ${purpleBorder}`,
-                    borderRadius: '12px',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    overflow: 'hidden',
-                  }}>
-                    <Box sx={{
-                      px: 1.5, py: 1,
-                      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                      borderBottom: `1px solid ${accentBorder}`,
-                    }}>
-                      <Typography sx={{ fontSize: 10, color: 'text.secondary', fontWeight: 500, letterSpacing: 0.5, textTransform: 'uppercase' }}>
-                        Files
-                      </Typography>
-                      <IconButton size="small" onClick={(e: React.MouseEvent<HTMLButtonElement>) => setAddMenuAnchor(e.currentTarget)} sx={{ p: 0.25 }}>
-                        <Add sx={{ fontSize: 14 }} />
-                      </IconButton>
-                    </Box>
-
-                    <List dense sx={{ flex: 1, overflow: 'auto', py: 0.5 }}>
-                      {currentProject?.files.map((file: { name: string; type: string }) => (
-                        <ListItem
-                          key={file.name}
-                          disablePadding
-                          sx={{ px: 0.5, '&:hover .file-actions': { opacity: 1 } }}
-                          secondaryAction={
-                            <IconButton
-                              className="file-actions"
-                              size="small"
-                              onClick={(e: React.MouseEvent<HTMLButtonElement>) => {
-                                e.stopPropagation();
-                                setFileMenuAnchor({ el: e.currentTarget, fileName: file.name });
-                              }}
-                              sx={{ opacity: 0, transition: 'opacity 0.15s', p: 0.25 }}
-                            >
-                              <MoreVert sx={{ fontSize: 14 }} />
-                            </IconButton>
-                          }
-                        >
-                          <ListItemButton
-                            selected={activeFile === file.name}
-                            onClick={() => setActiveFile(file.name)}
-                            sx={{ borderRadius: '4px', py: 0.25, minHeight: 28, pr: 4 }}
-                          >
-                            <ListItemIcon sx={{ minWidth: 22 }}>
-                              {FILE_ICONS[file.type] || <Description fontSize="small" />}
-                            </ListItemIcon>
-                            <ListItemText
-                              primary={file.name}
-                              primaryTypographyProps={{
-                                variant: 'caption',
-                                noWrap: true,
-                                fontWeight: file.name === currentProject.mainFile ? 600 : 400,
-                                fontSize: 11,
-                              }}
-                            />
-                          </ListItemButton>
-                        </ListItem>
-                      ))}
-                    </List>
-
-                    <Menu anchorEl={addMenuAnchor} open={Boolean(addMenuAnchor)} onClose={() => setAddMenuAnchor(null)}>
-                      <MenuItem onClick={() => handleAddFile('tex')} sx={{ fontSize: 12 }}>LaTeX (.tex)</MenuItem>
-                      <MenuItem onClick={() => handleAddFile('bib')} sx={{ fontSize: 12 }}>Bibliography (.bib)</MenuItem>
-                      <MenuItem onClick={() => handleAddFile('cls')} sx={{ fontSize: 12 }}>Class (.cls)</MenuItem>
-                    </Menu>
-
-                    <Menu
-                      anchorEl={fileMenuAnchor?.el}
-                      open={Boolean(fileMenuAnchor)}
-                      onClose={() => setFileMenuAnchor(null)}
-                    >
-                      <MenuItem
-                        onClick={() => fileMenuAnchor && handleDeleteFile(fileMenuAnchor.fileName)}
-                        sx={{ fontSize: 12, color: 'error.main' }}
-                      >
-                        <Delete sx={{ mr: 1, fontSize: 14 }} />
-                        Delete
-                      </MenuItem>
-                    </Menu>
-                  </Box>
-                </Panel>
-                {resizeHandle}
-              </>
-            )}
-
-            {/* Code Editor Panel */}
-            <Panel defaultSize={sidebarOpen ? (aiPanelOpen ? 37 : 47) : (aiPanelOpen ? 45 : 60)} minSize={20}>
+          {/* File Sidebar — always present, collapsible */}
+          <Panel
+            ref={filePanelRef}
+            defaultSize={14}
+            minSize={10}
+            maxSize={28}
+            collapsible
+            collapsedSize={3}
+            onCollapse={() => setSidebarCollapsed(true)}
+            onExpand={() => setSidebarCollapsed(false)}
+          >
+            <Box sx={{
+              height: '100%',
+              bgcolor: surfaceBg,
+              border: `1px solid ${purpleBorder}`,
+              borderRadius: '12px',
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden',
+            }}>
+              {/* Sidebar header */}
               <Box sx={{
-                height: '100%',
-                bgcolor: surfaceBg,
-                border: `1px solid ${purpleBorder}`,
-                borderRadius: '12px',
-                overflow: 'hidden',
+                px: sidebarCollapsed ? 0.5 : 1.5,
+                py: 1,
                 display: 'flex',
-                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: sidebarCollapsed ? 'center' : 'space-between',
+                borderBottom: `1px solid ${accentBorder}`,
+                flexShrink: 0,
               }}>
-                {/* Editor tabs */}
-                <Box sx={{
-                  display: 'flex', alignItems: 'center',
-                  borderBottom: `1px solid ${accentBorder}`,
-                  height: 36, flexShrink: 0, overflowX: 'auto',
-                }}>
-                  {currentProject?.files.map((file: { name: string }) => (
-                    <Box
+                {!sidebarCollapsed && (
+                  <Typography sx={{ fontSize: 10, color: 'text.secondary', fontWeight: 500, letterSpacing: 0.5, textTransform: 'uppercase' }}>
+                    Files
+                  </Typography>
+                )}
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.25 }}>
+                  {!sidebarCollapsed && (
+                    <IconButton size="small" onClick={(e: React.MouseEvent<HTMLButtonElement>) => setAddMenuAnchor(e.currentTarget)} sx={{ p: 0.25 }}>
+                      <Add sx={{ fontSize: 14 }} />
+                    </IconButton>
+                  )}
+                  <Tooltip title={sidebarCollapsed ? 'Expand files' : 'Collapse files'} placement="right">
+                    <IconButton size="small" onClick={toggleSidebar} sx={{ p: 0.25 }}>
+                      {sidebarCollapsed
+                        ? <ChevronRight sx={{ fontSize: 14 }} />
+                        : <ChevronLeft sx={{ fontSize: 14 }} />}
+                    </IconButton>
+                  </Tooltip>
+                </Box>
+              </Box>
+
+              {/* File list — hidden when collapsed */}
+              {!sidebarCollapsed && (
+                <List dense sx={{ flex: 1, overflow: 'auto', py: 0.5 }}>
+                  {currentProject?.files.map((file: { name: string; type: string }) => (
+                    <ListItem
                       key={file.name}
-                      onClick={() => setActiveFile(file.name)}
-                      sx={{
-                        px: 1.5, height: '100%',
-                        display: 'flex', alignItems: 'center', gap: 0.75,
-                        cursor: 'pointer', fontSize: 11, whiteSpace: 'nowrap',
-                        borderRight: `1px solid ${accentBorder}`,
-                        bgcolor: activeFile === file.name ? surfaceActive : 'transparent',
-                        borderTop: activeFile === file.name ? '2px solid' : '2px solid transparent',
-                        borderTopColor: activeFile === file.name ? 'primary.main' : 'transparent',
-                        color: activeFile === file.name ? 'text.primary' : 'text.secondary',
-                        fontWeight: activeFile === file.name ? 500 : 400,
-                        transition: 'all 0.1s',
-                        '&:hover': { bgcolor: surfaceActive },
-                      }}
+                      disablePadding
+                      sx={{ px: 0.5, '&:hover .file-actions': { opacity: 1 } }}
+                      secondaryAction={
+                        <IconButton
+                          className="file-actions"
+                          size="small"
+                          onClick={(e: React.MouseEvent<HTMLButtonElement>) => {
+                            e.stopPropagation();
+                            setFileMenuAnchor({ el: e.currentTarget, fileName: file.name });
+                          }}
+                          sx={{ opacity: 0, transition: 'opacity 0.15s', p: 0.25 }}
+                        >
+                          <MoreVert sx={{ fontSize: 14 }} />
+                        </IconButton>
+                      }
                     >
-                      <span className="material-symbols-outlined" style={{ fontSize: 14, color: activeFile === file.name ? (isDark ? '#ffffff' : '#0a0a0a') : undefined }}>description</span>
-                      {file.name}
-                    </Box>
+                      <ListItemButton
+                        selected={activeFile === file.name}
+                        onClick={() => setActiveFile(file.name)}
+                        sx={{ borderRadius: '4px', py: 0.25, minHeight: 28, pr: 4 }}
+                      >
+                        <ListItemIcon sx={{ minWidth: 22 }}>
+                          {FILE_ICONS[file.type] || <Description fontSize="small" />}
+                        </ListItemIcon>
+                        <ListItemText
+                          primary={file.name}
+                          primaryTypographyProps={{
+                            variant: 'caption',
+                            noWrap: true,
+                            fontWeight: file.name === currentProject.mainFile ? 600 : 400,
+                            fontSize: 11,
+                          }}
+                        />
+                      </ListItemButton>
+                    </ListItem>
                   ))}
-                </Box>
+                </List>
+              )}
+            </Box>
 
-                <Box sx={{ flex: 1, overflow: 'hidden', bgcolor: editorBg }}>
-                  {activeFile && (
-                    <MonacoEditor
-                      value={activeFileContent}
-                      onChange={(value) => updateFileContent(activeFile, value || '')}
-                      fileName={activeFile}
-                      projectId={currentProject?.id || ''}
-                      onSelectionChange={setEditorSelection}
-                    />
-                  )}
-                </Box>
-              </Box>
-            </Panel>
+            <Menu anchorEl={addMenuAnchor} open={Boolean(addMenuAnchor)} onClose={() => setAddMenuAnchor(null)}>
+              <MenuItem onClick={() => handleAddFile('tex')} sx={{ fontSize: 12 }}>LaTeX (.tex)</MenuItem>
+              <MenuItem onClick={() => handleAddFile('bib')} sx={{ fontSize: 12 }}>Bibliography (.bib)</MenuItem>
+              <MenuItem onClick={() => handleAddFile('cls')} sx={{ fontSize: 12 }}>Class (.cls)</MenuItem>
+            </Menu>
 
-            {resizeHandle}
+            <Menu anchorEl={fileMenuAnchor?.el} open={Boolean(fileMenuAnchor)} onClose={() => setFileMenuAnchor(null)}>
+              <MenuItem
+                onClick={() => fileMenuAnchor && handleDeleteFile(fileMenuAnchor.fileName)}
+                sx={{ fontSize: 12, color: 'error.main' }}
+              >
+                <Delete sx={{ mr: 1, fontSize: 14 }} />
+                Delete
+              </MenuItem>
+            </Menu>
+          </Panel>
 
-            {/* PDF Preview Panel */}
-            <Panel defaultSize={aiPanelOpen ? 30 : 40} minSize={18}>
-              <Box sx={{
-                height: '100%',
-                border: `1px solid ${purpleBorder}`,
-                borderRadius: '12px',
-                overflow: 'hidden',
-                display: 'flex',
-                flexDirection: 'column',
-              }}>
-                {/* PDF toolbar */}
-                <Box sx={{
-                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                  borderBottom: `1px solid ${accentBorder}`,
-                  bgcolor: surfaceBg, height: 36, px: 1, flexShrink: 0,
-                }}>
-                  <Typography sx={{ fontSize: 11, fontWeight: 500, ml: 0.5 }}>output.pdf</Typography>
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.25 }}>
-                    <IconButton size="small" onClick={() => setZoom((z: number) => Math.max(50, z - 10))} sx={{ p: 0.5 }}>
-                      <ZoomOut sx={{ fontSize: 14 }} />
-                    </IconButton>
-                    <Typography sx={{ fontSize: 10, minWidth: 28, textAlign: 'center', fontFamily: 'monospace' }}>{zoom}%</Typography>
-                    <IconButton size="small" onClick={() => setZoom((z: number) => Math.min(200, z + 10))} sx={{ p: 0.5 }}>
-                      <ZoomIn sx={{ fontSize: 14 }} />
-                    </IconButton>
-                  </Box>
-                </Box>
+          {resizeHandle}
 
-                <Box sx={{ flex: 1, overflow: 'hidden', bgcolor: pdfBg }}>
-                  {compileError ? (
-                    <Alert
-                      severity="error"
-                      sx={{ m: 1, whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: 11, '& .MuiAlert-message': { width: '100%' } }}
-                    >
-                      {compileError}
-                    </Alert>
-                  ) : pdfUrl ? (
-                    <PdfViewer url={pdfUrl} zoom={zoom} />
-                  ) : (
-                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
-                      <Typography variant="caption" color="text.secondary" sx={{ fontSize: 11 }}>
-                        Press Ctrl+B to compile
-                      </Typography>
-                    </Box>
-                  )}
-                </Box>
-              </Box>
-            </Panel>
-
-            {/* AI Panel */}
-            {aiPanelOpen && (
-              <>
-                {resizeHandle}
-                <Panel defaultSize={22} minSize={18} maxSize={40}>
-                  <AgentPanel
+          {/* Code Editor */}
+          <Panel defaultSize={aiPanelOpen ? 30 : 40} minSize={20}>
+            <Box sx={{
+              height: '100%',
+              bgcolor: surfaceBg,
+              border: `1px solid ${purpleBorder}`,
+              borderRadius: '12px',
+              overflow: 'hidden',
+            }}>
+              <Box sx={{ height: '100%', overflow: 'hidden', bgcolor: editorBg }}>
+                {activeFile && (
+                  <MonacoEditor
+                    value={activeFileContent}
+                    onChange={(value) => updateFileContent(activeFile, value || '')}
+                    fileName={activeFile}
                     projectId={currentProject?.id || ''}
-                    document={activeFileContent}
-                    selection={editorSelection}
-                    onApplyChanges={(newContent) => {
-                      if (activeFile) updateFileContent(activeFile, newContent);
-                    }}
+                    onSelectionChange={setEditorSelection}
                   />
-                </Panel>
-              </>
-            )}
-          </PanelGroup>
-        </Box>
+                )}
+              </Box>
+            </Box>
+          </Panel>
+
+          {resizeHandle}
+
+          {/* PDF Preview */}
+          <Panel defaultSize={aiPanelOpen ? 36 : 46} minSize={25}>
+            <Box sx={{
+              height: '100%',
+              border: `1px solid ${purpleBorder}`,
+              borderRadius: '12px',
+              overflow: 'hidden',
+              display: 'flex',
+              flexDirection: 'column',
+            }}>
+              <Box sx={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                borderBottom: `1px solid ${accentBorder}`,
+                bgcolor: surfaceBg, height: 36, px: 1, flexShrink: 0,
+              }}>
+                <Typography sx={{ fontSize: 11, fontWeight: 500, ml: 0.5 }}>output.pdf</Typography>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.25 }}>
+                  <IconButton size="small" onClick={() => setZoom((z) => Math.max(50, z - 10))} sx={{ p: 0.5 }}>
+                    <ZoomOut sx={{ fontSize: 14 }} />
+                  </IconButton>
+                  <Typography sx={{ fontSize: 10, minWidth: 28, textAlign: 'center', fontFamily: 'monospace' }}>{zoom}%</Typography>
+                  <IconButton size="small" onClick={() => setZoom((z) => Math.min(200, z + 10))} sx={{ p: 0.5 }}>
+                    <ZoomIn sx={{ fontSize: 14 }} />
+                  </IconButton>
+                </Box>
+              </Box>
+
+              <Box sx={{ flex: 1, overflow: 'hidden', bgcolor: pdfBg }}>
+                {compileError ? (
+                  <Alert severity="error" sx={{ m: 1, whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: 11, '& .MuiAlert-message': { width: '100%' } }}>
+                    {compileError}
+                  </Alert>
+                ) : pdfUrl ? (
+                  <PdfViewer url={pdfUrl} zoom={zoom} />
+                ) : (
+                  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+                    <Typography variant="caption" color="text.secondary" sx={{ fontSize: 11 }}>
+                      Press Ctrl+B to compile
+                    </Typography>
+                  </Box>
+                )}
+              </Box>
+            </Box>
+          </Panel>
+
+          {/* AI Panel */}
+          {aiPanelOpen && (
+            <>
+              {resizeHandle}
+              <Panel defaultSize={20} minSize={16} maxSize={40}>
+                <AgentPanel
+                  projectId={currentProject?.id || ''}
+                  document={activeFileContent}
+                  selection={editorSelection}
+                  onApplyChanges={(newContent) => {
+                    if (activeFile) updateFileContent(activeFile, newContent);
+                  }}
+                  onClose={() => setAiPanelOpen(false)}
+                />
+              </Panel>
+            </>
+          )}
+        </PanelGroup>
       </Box>
+
+      {/* Floating AI button — only visible when panel is closed */}
+      {!aiPanelOpen && (
+        <Tooltip title={`AI Assistant${aiModel === 'pro' ? ' (Pro)' : ' (Flash)'}`} placement="left">
+          <Box
+            onClick={() => setAiPanelOpen(true)}
+            sx={{
+              position: 'fixed',
+              bottom: 30,
+              right: 30,
+              width: 40,
+              height: 40,
+              borderRadius: '50%',
+              bgcolor: surfaceBg,
+              border: `1px solid ${purpleBorder}`,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: 'pointer',
+              boxShadow: '0 4px 16px rgba(0,0,0,0.2)',
+              transition: 'all 0.15s',
+              zIndex: 200,
+              '&:hover': {
+                bgcolor: 'primary.main',
+                borderColor: 'primary.main',
+                '& .chat-icon': { color: '#fff' },
+              },
+            }}
+          >
+            <Chat className="chat-icon" sx={{ fontSize: 18, color: 'text.secondary', transition: 'color 0.15s' }} />
+          </Box>
+        </Tooltip>
+      )}
 
       <Snackbar
         open={snackbar.open}

@@ -259,16 +259,21 @@ class GeminiService:
                 cached_tokens = usage.get("cachedContentTokenCount", 0)
                 if cached_tokens > 0:
                     print(f"Used {cached_tokens} cached tokens out of {tokens} total")
-                if finish_reason == "MAX_TOKENS":
-                    raise Exception(f"Response exceeded token limit. Try using a shorter document or simpler instruction. Used {tokens} tokens.")
-                
-                # Check if content exists and has parts
-                content = candidate.get("content", {})
+
+                # Extract parts (available even on truncated responses)
                 parts = content.get("parts", [])
-                
+                partial_text = parts[0].get("text", "") if parts else ""
+
+                if finish_reason == "MAX_TOKENS":
+                    raise TokenLimitError(
+                        "Response truncated at token limit.",
+                        partial_text=partial_text,
+                        tokens=tokens
+                    )
+
                 if not parts or not parts[0].get("text"):
                     raise Exception(f"Empty response from API. Finish reason: {finish_reason}")
-                
+
                 text = parts[0]["text"]
                 return text, tokens
             except (TokenLimitError, ContentBlockedError):
@@ -863,6 +868,74 @@ Return ONLY the improved LaTeX code. Do NOT wrap in markdown code fences."""
             if text.rstrip().endswith("```"):
                 text = text.rstrip()[:-3].rstrip()
         return text
+
+    def _try_repair_json(self, text: str) -> Optional[Dict]:
+        """Try to repair and parse potentially truncated JSON."""
+        if not text:
+            return None
+        text = text.strip()
+        # Strip code fences
+        if text.startswith("```"):
+            first_newline = text.find("\n")
+            if first_newline != -1:
+                text = text[first_newline + 1:]
+            if text.rstrip().endswith("```"):
+                text = text.rstrip()[:-3].rstrip()
+
+        # Try direct parse first
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+
+        # Try to close incomplete JSON at the last complete object boundary
+        for close_suffix in [']}', ']}\n', '\n]}']:
+            last_brace = text.rfind('},')
+            if last_brace > 0:
+                try:
+                    return json.loads(text[:last_brace + 1] + close_suffix)
+                except json.JSONDecodeError:
+                    pass
+
+        return None
+
+    async def agent_edit_stream(
+        self,
+        document: str,
+        instruction: str,
+        model: str = "pro",
+        selection: Optional[dict] = None
+    ):
+        """
+        Async generator for agent edit with automatic continuation on token cap.
+
+        Yields:
+          {"type": "chunk", "text": str}
+          {"type": "result", "data": dict, "tokens": int}
+        """
+        yield {"type": "chunk", "text": "Analyzing your document..."}
+
+        total_tokens = 0
+
+        try:
+            result, tokens = await self.agent_edit(document, instruction, model, selection)
+            total_tokens = tokens
+            yield {"type": "result", "data": result, "tokens": total_tokens}
+
+        except TokenLimitError as e:
+            # Response was truncated — try to salvage partial JSON first
+            total_tokens = e.tokens
+            repaired = self._try_repair_json(e.partial_text) if e.partial_text else None
+
+            if repaired and repaired.get("changes"):
+                yield {"type": "chunk", "text": "\nPartial result recovered."}
+                yield {"type": "result", "data": repaired, "tokens": total_tokens}
+            else:
+                # Fall back to batched processing for large documents
+                yield {"type": "chunk", "text": "\nDocument is large — switching to batch mode..."}
+                batch_result, batch_tokens = await self.agent_edit_batched(document, instruction, model)
+                total_tokens += batch_tokens
+                yield {"type": "result", "data": batch_result, "tokens": total_tokens}
 
     def _get_theme_description(self, theme: str) -> str:
         themes = {

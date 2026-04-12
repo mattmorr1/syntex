@@ -1,7 +1,5 @@
 to do:
-- fix login issues (repeat sign in sso)
 - abstracting layer for ai agent (langchain?)
-- worried about prompting (rate limiting, prompt cap, config in admin?)
 - api interchanging?
 - how does admin have control over backend? -> no home button back, have to use url
 - more efficient way to create accounts?
@@ -19,10 +17,6 @@ to do:
 - batching/agentic until full output generated (rn token cap) -> batching should be more around if it caps out length
 - write readme, create notion site for explain use case
 - renderer viewer doesnt clear after leaving specific file
-- ux is wack
-- pdf viewer is odd
-- top bar is weird
-- 1.1 ux?
 
 -> connect to api key?
 - What types of uploads does it allow?(is there a spot for specifications that i missed)

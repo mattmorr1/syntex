@@ -95,22 +95,36 @@ async def agent_edit(request: AgentEditRequest, user: dict = Depends(get_current
 
 @router.post("/agent-edit/stream")
 async def agent_edit_stream(request: AgentEditRequest, user: dict = Depends(get_current_user)):
+    model = request.model or "pro"
+
     async def event_generator():
+        total_tokens = 0
         try:
             selection_dict = request.selection.model_dump() if request.selection else None
             async for event in gemini_service.agent_edit_stream(
                 request.document,
                 request.instruction,
-                request.model or "pro",
+                model,
                 selection=selection_dict
             ):
                 if event["type"] == "chunk":
                     yield f"data: {json_lib.dumps({'type': 'chunk', 'text': event['text']})}\n\n"
                 elif event["type"] == "result":
+                    total_tokens = event.get("tokens", 0)
                     result = event["data"]
-                    yield f"data: {json_lib.dumps({'type': 'result', 'explanation': result.get('explanation', ''), 'changes': result.get('changes', []), 'tokens': 0})}\n\n"
+                    yield f"data: {json_lib.dumps({'type': 'result', 'explanation': result.get('explanation', ''), 'changes': result.get('changes', []), 'tokens': total_tokens})}\n\n"
         except Exception as e:
             yield f"data: {json_lib.dumps({'type': 'error', 'message': str(e)})}\n\n"
+        finally:
+            # Update token pool — fire-and-forget; don't fail the stream if this errors
+            if total_tokens > 0:
+                try:
+                    if model == "flash":
+                        await db_service.update_user_tokens(user["uid"], flash_tokens=total_tokens)
+                    else:
+                        await db_service.update_user_tokens(user["uid"], pro_tokens=total_tokens)
+                except Exception:
+                    pass
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(
