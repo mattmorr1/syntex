@@ -231,7 +231,7 @@ class GeminiService:
             payload["cachedContent"] = cached_content
 
         async with httpx.AsyncClient() as client:
-            response = await client.post(url, json=payload, timeout=120.0)
+            response = await client.post(url, json=payload, timeout=httpx.Timeout(connect=10.0, read=540.0, write=30.0, pool=10.0))
             
             if response.status_code != 200:
                 err_msg = response.text[:500] if len(response.text) > 500 else response.text
