@@ -93,6 +93,7 @@ export function PdfViewer({ url, zoom }: PdfViewerProps) {
 
         {!error && (
           <Document
+            key={url}
             file={url}
             onLoadSuccess={onDocumentLoad}
             onLoadError={onDocumentError}

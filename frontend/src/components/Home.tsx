@@ -211,7 +211,7 @@ export function Home() {
       {/* Create Section */}
       <Box sx={{
         borderBottom: `1px solid ${purpleBorder}`,
-        bgcolor: isDark ? 'rgba(124, 58, 237, 0.02)' : 'rgba(109, 40, 217, 0.01)',
+        bgcolor: isDark ? 'rgba(31, 31, 31, 0.02)' : 'rgba(37, 37, 37, 0.01)',
       }}>
         <Box sx={{ maxWidth: 900, mx: 'auto', px: 3, py: 3 }}>
           <Typography sx={{ mb: 1.5, fontSize: 11, color: 'text.secondary', fontWeight: 500, letterSpacing: 0.5, textTransform: 'uppercase' }}>

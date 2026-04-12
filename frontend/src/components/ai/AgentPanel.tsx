@@ -14,6 +14,7 @@ import {
   Send,
   Check,
   Clear,
+  Close,
   ExpandMore,
   ExpandLess,
   SmartToy,
@@ -42,9 +43,10 @@ interface AgentPanelProps {
   document: string;
   selection?: SelectionInfo | null;
   onApplyChanges: (newContent: string) => void;
+  onClose?: () => void;
 }
 
-export function AgentPanel({ projectId, document, selection, onApplyChanges }: AgentPanelProps) {
+export function AgentPanel({ projectId, document, selection, onApplyChanges, onClose }: AgentPanelProps) {
   const { mode } = useThemeStore();
   const { aiModel } = useSettingsStore();
   const [instruction, setInstruction] = useState('');
@@ -172,16 +174,23 @@ export function AgentPanel({ projectId, document, selection, onApplyChanges }: A
         px: 1.5,
         display: 'flex',
         alignItems: 'center',
-        gap: 1,
+        justifyContent: 'space-between',
         borderBottom: `1px solid ${accentBorder}`,
         flexShrink: 0,
       }}>
-        <Box sx={{ color: 'primary.main', display: 'flex', alignItems: 'center' }}>
-          <span className="material-symbols-outlined" style={{ fontSize: 16 }}>auto_awesome</span>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <Box sx={{ color: 'primary.main', display: 'flex', alignItems: 'center' }}>
+            <span className="material-symbols-outlined" style={{ fontSize: 16 }}>auto_awesome</span>
+          </Box>
+          <Typography sx={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.3 }}>
+            AI Assistant
+          </Typography>
         </Box>
-        <Typography sx={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.3 }}>
-          AI Assistant
-        </Typography>
+        {onClose && (
+          <IconButton size="small" onClick={onClose} sx={{ p: 0.25, color: 'text.secondary' }}>
+            <Close sx={{ fontSize: 14 }} />
+          </IconButton>
+        )}
       </Box>
 
       {/* Messages */}

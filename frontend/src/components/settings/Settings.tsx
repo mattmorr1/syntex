@@ -4,7 +4,6 @@ import SyntexLogo from '../common/SyntexLogo';
 import {
   Box,
   Typography,
-  Divider,
   Alert,
   Button,
   ToggleButtonGroup,
@@ -99,7 +98,7 @@ export function Settings() {
           <SyntexLogo size="sm" />
           <Typography sx={{ fontWeight: 600, fontSize: 12 }}>syntex</Typography>
         </Box>
-        <Box sx={{ width: 1, height: 16, bgcolor: accentBorder }} />
+        <Box sx={{ width: '1px', height: '16px', bgcolor: accentBorder }} />
         <Typography sx={{ fontSize: 12, color: 'text.secondary' }}>Settings</Typography>
       </Box>
 
@@ -158,7 +157,6 @@ export function Settings() {
               </Typography>
             }
           />
-          <Divider sx={{ borderColor: accentBorder }} />
           <Row
             label="Reset password"
             description="We'll send a reset link to your email"
