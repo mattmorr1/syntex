@@ -494,6 +494,10 @@ Return ONLY the completion text, nothing else. No explanations."""
             "- Transcribe all equations into LaTeX math notation.\n"
             "- Reproduce every table completely using tabular or booktabs.\n"
             "- Do NOT include \\documentclass, \\begin{document}, or \\end{document}.\n"
+            "OVERFLOW PREVENTION (mandatory):\n"
+            "- Wrap EVERY tabular in \\resizebox{\\textwidth}{!}{\\begin{tabular}...\\end{tabular}}.\n"
+            "- For wide equations use \\small or split with align/multline.\n"
+            "- Use p{} or X columns for text-heavy columns, never wide l/c/r.\n\n"
             f"{cls_instruction}"
             f"{inventory_block}"
             f"PREAMBLE CONTEXT (for package awareness — do not repeat):\n{preamble[:1500]}\n\n"
@@ -682,7 +686,13 @@ Return ONLY the completion text, nothing else. No explanations."""
             "- Reproduce every table completely using tabular or booktabs.\n"
             "- Keep all section headings in their original order.\n"
             "- Prose may be lightly reformatted for LaTeX style but must be complete.\n"
-            "- End the file with \\end{document}.\n\n"
+            "- End the file with \\end{document}.\n"
+            "OVERFLOW PREVENTION (mandatory):\n"
+            "- Include \\usepackage{geometry} with margin=1in and \\usepackage{microtype}.\n"
+            "- Wrap EVERY tabular in \\resizebox{\\textwidth}{!}{\\begin{tabular}...\\end{tabular}}.\n"
+            "- For wide equations use the \\small font size or split with align/multline.\n"
+            "- Use p{} or X columns (tabularx) for text-heavy columns, never fixed wide l/c/r.\n"
+            "- Long strings of text or URLs inside cells must be wrapped with \\seqsplit{} or truncated.\n\n"
             f"{inventory_block}"
             f"{cls_instruction}"
             f"{extra_instructions}"
@@ -797,11 +807,41 @@ Return ONLY the completion text, nothing else. No explanations."""
     def _fix_latex_artifacts(text: str) -> str:
         """
         Fix common model-generated LaTeX artifacts before saving.
-        - \\t followed by whitespace (not braces): model meant the letter 't',
-          but \\t is LaTeX's tie-after accent, causing silent character loss on render.
+
+        1. \\t<whitespace>: model meant the letter 't', but \\t is LaTeX's
+           tie-after accent — causes silent character loss on render.
+        2. Bare tabulars not wrapped in \\resizebox — causes horizontal overflow.
+        3. Ensure \\usepackage{geometry} and microtype present in preamble.
         """
-        # \t<space> → t<space>  (tie-after accent misused as the letter 't')
+        # 1. \t<space> → t<space>
         text = re.sub(r'\\t(\s)', r't\1', text)
+
+        # 2. Wrap any \begin{tabular} not already inside \resizebox
+        #    Pattern: \begin{tabular} that is NOT preceded by \resizebox{...}{!}{
+        def wrap_tabular(m: re.Match) -> str:
+            before = text[:m.start()]
+            # Check if already inside a \resizebox within the last 100 chars
+            if r'\resizebox' in before[-100:]:
+                return m.group(0)
+            tabular_block = m.group(0)
+            return r'\resizebox{\textwidth}{!}{' + tabular_block + r'}'
+
+        text = re.sub(
+            r'\\begin\{tabular\}.*?\\end\{tabular\}',
+            wrap_tabular,
+            text,
+            flags=re.DOTALL,
+        )
+
+        # 3. Inject geometry + microtype if missing, right after \documentclass line
+        if r'\usepackage{geometry}' not in text and r'\documentclass' in text:
+            text = re.sub(
+                r'(\\documentclass(?:\[.*?\])?\{.*?\})',
+                r'\1\n\\usepackage[margin=1in]{geometry}\n\\usepackage{microtype}',
+                text,
+                count=1,
+            )
+
         return text
 
     async def _generate_bibliography(

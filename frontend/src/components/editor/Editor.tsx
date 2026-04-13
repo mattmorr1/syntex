@@ -603,6 +603,7 @@ export function Editor() {
                     fileName={activeFile}
                     projectId={currentProject?.id || ''}
                     onSelectionChange={setEditorSelection}
+                    clsContent={currentProject?.files.find((f: { name: string }) => f.name.endsWith('.cls'))?.content}
                   />
                 ) : null}
               </Box>

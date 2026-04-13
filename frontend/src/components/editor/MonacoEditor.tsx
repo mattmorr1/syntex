@@ -20,10 +20,11 @@ interface MonacoEditorProps {
   fileName: string;
   projectId: string;
   onSelectionChange?: (selection: EditorSelection | null) => void;
+  clsContent?: string;
 }
 
 export const MonacoEditor = forwardRef<MonacoEditorHandle, MonacoEditorProps>(
-function MonacoEditor({ value, onChange, fileName, projectId, onSelectionChange }, ref) {
+function MonacoEditor({ value, onChange, fileName, projectId, onSelectionChange, clsContent }, ref) {
   const { mode } = useThemeStore();
   const editorRef = useRef<any>(null);
   const monacoRef = useRef<Monaco | null>(null);
@@ -32,6 +33,48 @@ function MonacoEditor({ value, onChange, fileName, projectId, onSelectionChange 
   const decorationsRef = useRef<string[]>([]);
   const autocompleteTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Register cls-defined commands as completion items whenever clsContent changes
+  const clsDisposableRef = useRef<any>(null);
+  useEffect(() => {
+    const monaco = monacoRef.current;
+    if (!monaco || !clsContent) return;
+
+    // Extract \newcommand{\CmdName} and \def\CmdName patterns
+    const cmdNames: string[] = [];
+    for (const match of clsContent.matchAll(/\\(?:re)?newcommand\{?\\(\w+)|\\(?:long\\)?def\\(\w+)/g)) {
+      const name = match[1] || match[2];
+      if (name && !/^@/.test(name)) cmdNames.push(name);
+    }
+    const unique = [...new Set(cmdNames)];
+    if (!unique.length) return;
+
+    // Dispose previous registration
+    clsDisposableRef.current?.dispose();
+
+    clsDisposableRef.current = monaco.languages.registerCompletionItemProvider('latex', {
+      provideCompletionItems: (model, position) => {
+        const word = model.getWordUntilPosition(position);
+        const range = {
+          startLineNumber: position.lineNumber,
+          endLineNumber: position.lineNumber,
+          startColumn: word.startColumn,
+          endColumn: word.endColumn,
+        };
+        return {
+          suggestions: unique.map(name => ({
+            label: `\\${name}`,
+            kind: monaco.languages.CompletionItemKind.Function,
+            insertText: `\\${name}`,
+            detail: 'From custom.cls',
+            range,
+          })),
+        };
+      },
+    });
+
+    return () => { clsDisposableRef.current?.dispose(); };
+  }, [clsContent]);
 
   const handleEditorMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
