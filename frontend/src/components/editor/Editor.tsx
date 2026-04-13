@@ -745,6 +745,7 @@ export function Editor() {
                 <AgentPanel
                   projectId={currentProject?.id || ''}
                   document={activeFileContent}
+                  fileName={activeFile || undefined}
                   selection={editorSelection}
                   projectFiles={currentProject?.files}
                   compileError={compileError}

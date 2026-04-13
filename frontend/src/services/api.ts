@@ -137,6 +137,7 @@ export const api = {
     onResult?: (data: { explanation: string; changes: any[]; tokens: number }) => void,
     onError?: (message: string) => void,
     projectFiles?: Array<{ name: string; content: string; type: string }>,
+    fileName?: string,
   ) => {
     const token = useAuthStore.getState().token;
     const response = await fetch(`${API_BASE}/ai/agent-edit/stream`, {
@@ -145,7 +146,7 @@ export const api = {
         'Content-Type': 'application/json',
         ...(token && { Authorization: `Bearer ${token}` }),
       },
-      body: JSON.stringify({ project_id: projectId, instruction, document, model, selection, project_files: projectFiles }),
+      body: JSON.stringify({ project_id: projectId, instruction, document, model, selection, project_files: projectFiles, file_name: fileName }),
     });
 
     if (response.status === 401) {
