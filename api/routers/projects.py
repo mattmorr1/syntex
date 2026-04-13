@@ -1,7 +1,8 @@
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
-from typing import List, Optional
+from typing import Annotated, List, Optional
 import tempfile
 import os
+import re
 import json as json_module
 import zipfile
 import base64
@@ -97,7 +98,7 @@ async def delete_project(project_id: str, user: dict = Depends(get_current_user)
 @router.post("/{project_id}/add-images")
 async def add_images_to_project(
     project_id: str,
-    images: List[UploadFile] = File(...),
+    images: Annotated[List[UploadFile], File()],
     user: dict = Depends(get_current_user)
 ):
     """Add one or more image files to an existing project."""
@@ -131,7 +132,11 @@ async def add_images_to_project(
             candidate = f"{base_name}_{counter}.{ext}"
             counter += 1
         # Upload to GCS instead of storing base64 in Firestore
-        gcs_ref = gcs_upload(raw, project_id, candidate, mime)
+        try:
+            gcs_ref = gcs_upload(raw, project_id, candidate, mime)
+        except Exception as gcs_err:
+            logger.error(f"GCS upload failed for {candidate}: {gcs_err}")
+            raise HTTPException(status_code=502, detail=f"Image storage failed: {str(gcs_err)[:200]}")
         new_files.append({"name": candidate, "content": gcs_ref, "type": file_type})
         existing_names.add(candidate)
         added.append(candidate)
@@ -286,6 +291,38 @@ async def upload_file(
                 logger.info(f"Bibliography generated: {len(bib_content)} chars")
         except Exception as bib_err:
             logger.warning(f"Bibliography generation failed: {bib_err}")
+
+        # Embed bibliography as \begin{filecontents}{references.bib}...\end{filecontents}
+        # directly in main.tex (self-contained; no external .bib needed at compile time).
+        # Also ensure \addbibresource{references.bib} is present in the preamble.
+        if bib_content:
+            filecontents_block = (
+                "\\begin{filecontents}{references.bib}\n"
+                + bib_content + "\n"
+                + "\\end{filecontents}\n"
+            )
+            # Inject immediately after \documentclass{...} line
+            latex_content = re.sub(
+                r'(\\documentclass(?:\[.*?\])?\{[^}]+\}[^\n]*\n)',
+                lambda m: m.group(0) + filecontents_block,
+                latex_content,
+                count=1,
+            )
+            # Ensure \addbibresource{references.bib} is present
+            if r'\addbibresource{references.bib}' not in latex_content:
+                latex_content = re.sub(
+                    r'(\\begin\{document\})',
+                    r'\\addbibresource{references.bib}\n\1',
+                    latex_content,
+                    count=1,
+                )
+            # Ensure \printbibliography is before \end{document}
+            if r'\printbibliography' not in latex_content:
+                latex_content = latex_content.replace(
+                    r'\end{document}',
+                    r'\printbibliography' + '\n' + r'\end{document}',
+                    1,
+                )
 
         # Build project files
         project_files = [

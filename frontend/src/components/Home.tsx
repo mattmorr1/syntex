@@ -496,7 +496,7 @@ export function Home() {
         <MenuItem onClick={handleDuplicate} sx={{ fontSize: 12 }}>
           <ContentCopy sx={{ mr: 1.5, fontSize: 14 }} /> Duplicate
         </MenuItem>
-        <MenuItem onClick={() => { window.open(`/download-pdf/${menuAnchor?.project.id}`); handleMenuClose(); }} sx={{ fontSize: 12 }}>
+        <MenuItem onClick={() => { api.downloadPdf(menuAnchor!.project.id, menuAnchor!.project.name); handleMenuClose(); }} sx={{ fontSize: 12 }}>
           <Download sx={{ mr: 1.5, fontSize: 14 }} /> Download
         </MenuItem>
         <MenuItem onClick={handleDelete} sx={{ fontSize: 12, color: 'error.main' }}>

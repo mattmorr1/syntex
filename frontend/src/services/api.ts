@@ -138,6 +138,7 @@ export const api = {
     onError?: (message: string) => void,
     projectFiles?: Array<{ name: string; content: string; type: string }>,
     fileName?: string,
+    cursorLine?: number,
   ) => {
     const token = useAuthStore.getState().token;
     const response = await fetch(`${API_BASE}/ai/agent-edit/stream`, {
@@ -146,7 +147,7 @@ export const api = {
         'Content-Type': 'application/json',
         ...(token && { Authorization: `Bearer ${token}` }),
       },
-      body: JSON.stringify({ project_id: projectId, instruction, document, model, selection, project_files: projectFiles, file_name: fileName }),
+      body: JSON.stringify({ project_id: projectId, instruction, document, model, selection, project_files: projectFiles, file_name: fileName, cursor_line: cursorLine }),
     });
 
     if (response.status === 401) {
@@ -212,7 +213,11 @@ export const api = {
 
   // Upload
   uploadFile: async (file: File, theme: string, customTheme?: string, clsContent?: string, maxTokens?: number): Promise<{ project_id: string; tokens_used: number; missing_images: string[] }> => {
-    const token = useAuthStore.getState().token;
+    let token = useAuthStore.getState().token;
+    if (firebaseEnabled) {
+      const fresh = await getCurrentToken();
+      if (fresh) { token = fresh; useAuthStore.getState().setToken(fresh); }
+    }
     const formData = new FormData();
     formData.append('file', file);
     formData.append('theme', theme);
@@ -235,8 +240,33 @@ export const api = {
     return { ...data, missing_images: data.missing_images || [] };
   },
 
+  downloadPdf: async (projectId: string, fileName: string): Promise<void> => {
+    let token = useAuthStore.getState().token;
+    if (firebaseEnabled) {
+      const fresh = await getCurrentToken();
+      if (fresh) { token = fresh; useAuthStore.getState().setToken(fresh); }
+    }
+    const response = await fetch(`${API_BASE}/download-pdf/${projectId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) throw new Error('Download failed');
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${fileName}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  },
+
   addProjectImages: async (projectId: string, images: File[]): Promise<{ added: string[] }> => {
-    const token = useAuthStore.getState().token;
+    let token = useAuthStore.getState().token;
+    if (firebaseEnabled) {
+      const fresh = await getCurrentToken();
+      if (fresh) { token = fresh; useAuthStore.getState().setToken(fresh); }
+    }
     const formData = new FormData();
     for (const img of images) {
       formData.append('images', img);

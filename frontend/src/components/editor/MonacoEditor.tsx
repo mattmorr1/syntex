@@ -12,6 +12,8 @@ export interface EditorSelection {
 
 export interface MonacoEditorHandle {
   insertText: (text: string) => void;
+  goToLine: (lineNumber: number) => void;
+  getCursorLine: () => number;
 }
 
 export interface CompileError {
@@ -126,16 +128,26 @@ function MonacoEditor({ value, onChange, fileName, projectId, onSelectionChange,
       clearGhostText();
     });
     
-    // Tab key handler for accepting ghost text
+    // Tab key: accept ghost text, or indent selected lines, or insert spaces
     editor.addCommand(monaco.KeyCode.Tab, () => {
       if (ghostText && ghostPosition) {
         acceptGhostText();
+        return;
+      }
+      const sel = editor.getSelection();
+      if (sel && !sel.isEmpty() && sel.startLineNumber !== sel.endLineNumber) {
+        // Multi-line selection → indent all selected lines
+        editor.trigger('keyboard', 'editor.action.indentLines', null);
       } else {
-        // Default tab behavior
         editor.trigger('keyboard', 'tab', null);
       }
     });
-    
+
+    // Shift+Tab: outdent selected lines
+    editor.addCommand(monaco.KeyMod.Shift | monaco.KeyCode.Tab, () => {
+      editor.trigger('keyboard', 'editor.action.outdentLines', null);
+    });
+
     // Escape to dismiss ghost text
     editor.addCommand(monaco.KeyCode.Escape, () => {
       clearGhostText();
@@ -302,7 +314,7 @@ function MonacoEditor({ value, onChange, fileName, projectId, onSelectionChange,
     };
   }, []);
 
-  // Expose insertText for parent components (e.g. image upload)
+  // Expose handle methods for parent components
   useImperativeHandle(ref, () => ({
     insertText: (text: string) => {
       const editor = editorRef.current;
@@ -321,6 +333,16 @@ function MonacoEditor({ value, onChange, fileName, projectId, onSelectionChange,
       ]);
       editor.focus();
     },
+    goToLine: (lineNumber: number) => {
+      const editor = editorRef.current;
+      if (!editor) return;
+      editor.revealLineInCenter(lineNumber);
+      editor.setPosition({ lineNumber, column: 1 });
+      editor.focus();
+    },
+    getCursorLine: () => {
+      return editorRef.current?.getPosition()?.lineNumber ?? 1;
+    },
   }));
 
   return (
@@ -328,9 +350,9 @@ function MonacoEditor({ value, onChange, fileName, projectId, onSelectionChange,
       <style>
         {`
           .ghost-text-decoration {
-            color: #52525b !important;
+            color: ${mode === 'dark' ? '#71717a' : '#a1a1aa'} !important;
             font-style: italic;
-            opacity: 0.5;
+            opacity: 0.7;
           }
         `}
       </style>
@@ -390,15 +412,37 @@ function MonacoEditor({ value, onChange, fileName, projectId, onSelectionChange,
             base: 'vs',
             inherit: true,
             rules: [
-              { token: 'keyword.latex', foreground: '3f3f46' },
-              { token: 'command.latex', foreground: '0a0a0a' },
+              { token: 'keyword.latex', foreground: '7c3aed' },
+              { token: 'command.latex', foreground: '1d4ed8' },
               { token: 'comment.latex', foreground: 'a1a1aa', fontStyle: 'italic' },
               { token: 'math.latex', foreground: 'b45309' },
+              { token: 'delimiter.latex', foreground: '52525b' },
+              { token: 'string', foreground: '15803d' },
+              { token: 'string.latex', foreground: '52525b' },
             ],
             colors: {
               'editor.background': '#fafafa',
-              'editor.selectionBackground': '#0a0a0a20',
+              'editor.foreground': '#0a0a0a',
+              'editorLineNumber.foreground': '#d4d4d8',
+              'editorLineNumber.activeForeground': '#71717a',
               'editorCursor.foreground': '#0a0a0a',
+              'editor.selectionBackground': '#0a0a0a18',
+              'editor.lineHighlightBackground': '#f4f4f500',
+              'editorGutter.background': '#fafafa',
+              'editorWidget.background': '#ffffff',
+              'editorWidget.border': '#e4e4e7',
+              'editorSuggestWidget.background': '#ffffff',
+              'editorSuggestWidget.border': '#e4e4e7',
+              'editorSuggestWidget.foreground': '#0a0a0a',
+              'editorSuggestWidget.selectedBackground': '#f4f4f5',
+              'editorSuggestWidget.selectedForeground': '#0a0a0a',
+              'editorHoverWidget.background': '#ffffff',
+              'editorHoverWidget.border': '#e4e4e7',
+              'input.background': '#ffffff',
+              'input.border': '#e4e4e7',
+              'focusBorder': '#0a0a0a',
+              'scrollbarSlider.background': '#d4d4d840',
+              'scrollbarSlider.hoverBackground': '#a1a1aa60',
             },
           });
         }}

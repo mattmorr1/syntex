@@ -470,12 +470,14 @@ Return ONLY the completion text, nothing else. No explanations."""
             f"You are a LaTeX document architect. Analyse the academic paper below "
             f"and produce a JSON document skeleton using {theme_desc} style.\n\n"
             "RULES:\n"
-            "- preamble: full \\documentclass + \\usepackage block + \\title + "
+            "- preamble: full \\documentclass + \\usepackage block (include "
+            "\\usepackage[backend=bibtex,style=authoryear]{biblatex} and "
+            "\\addbibresource{references.bib}) + \\title + "
             "\\author + \\date + \\begin{document} + \\maketitle + \\begin{abstract}...\\end{abstract}\n"
             "- sections: array of top-level sections (Introduction, Methods, etc.), "
             "each with a unique placeholder string (SECTION_0, SECTION_1, …) and the "
             "approximate start/end character offsets in the source text\n"
-            "- postamble: \\bibliographystyle + \\bibliography + \\end{document}\n"
+            "- postamble: \\printbibliography + \\end{document} (use biblatex, NOT \\bibliographystyle or \\bibliography)\n"
             f"{cls_instruction}"
             f"{('Extra preamble: ' + custom_preamble + chr(10)) if custom_preamble else ''}"
             "\nSOURCE PAPER:\n"
@@ -520,7 +522,9 @@ Return ONLY the completion text, nothing else. No explanations."""
             "OVERFLOW PREVENTION (mandatory):\n"
             "- Wrap EVERY tabular in \\resizebox{\\textwidth}{!}{\\begin{tabular}...\\end{tabular}}.\n"
             "- For wide equations use \\small or split with align/multline.\n"
-            "- Use p{} or X columns for text-heavy columns, never wide l/c/r.\n\n"
+            "- Use p{} or X columns for text-heavy columns, never wide l/c/r.\n"
+            "- For figures use [width=0.7\\textwidth] or smaller — NEVER [width=\\textwidth].\n"
+            "- Use \\cite{key} for citations (biblatex). Do NOT use \\t for indentation — just start text directly.\n\n"
             f"{cls_instruction}"
             f"{inventory_block}"
             f"PREAMBLE CONTEXT (for package awareness — do not repeat):\n{preamble[:1500]}\n\n"
@@ -863,8 +867,22 @@ Return ONLY the completion text, nothing else. No explanations."""
         5. Remove duplicate \\begin{document} (chunked generation artefact)
         6. Truncate content after \\end{document}
         """
-        # 1. \t<space> → t<space>
-        text = re.sub(r'\\t(\s)', r't\1', text)
+        # 1. Strip model-generated \t (LaTeX tie-after accent — not a tab/indent):
+        #    \t{X} → X  (braced form, e.g. \t{T}his → This, \t{h}is → his)
+        text = re.sub(r'\\t\{(.)\}', r'\1', text)
+        #    \t<space>+<lowercase> → uppercase letter  (model used \t as indent before a word)
+        #    e.g. \t his paper → His paper
+        text = re.sub(r'\\t\s+([a-z])', lambda m: m.group(1).upper(), text)
+        #    \t<space>+ (remaining cases, before uppercase or non-letter) → remove
+        text = re.sub(r'\\t\s+', '', text)
+
+        # 1b. Decorative first-letter commands the model generates that have no package:
+        #    \lettrine{T}{his} → This, \dropcap{T}his → This, etc.
+        for _dc in ['lettrine', 'Lettrine', 'dropcap', 'initial', 'drop', 'yinipar']:
+            # two-arg form: \cmd{T}{his} → This
+            text = re.sub(rf'\\{_dc}\{{([A-Za-z])\}}\{{([^}}]*)\}}', r'\1\2', text)
+            # one-arg form: \cmd{T}his → This
+            text = re.sub(rf'\\{_dc}\{{([A-Za-z])\}}', r'\1', text)
 
         # 2. Wrap any \begin{tabular} not already inside \resizebox
         def wrap_tabular(m: re.Match) -> str:
@@ -917,6 +935,26 @@ Return ONLY the completion text, nothing else. No explanations."""
                 count=1,
             )
 
+        # 5a. Cap figure widths — model often uses [width=\textwidth] which makes graphs
+        #     fill the entire page.  Clamp to 0.7\textwidth as a sensible default.
+        text = re.sub(
+            r'\\includegraphics\[([^\]]*?)width\\?=?\\textwidth([^\]]*?)\]',
+            lambda m: r'\includegraphics[' + m.group(1) + r'width=0.7\textwidth' + m.group(2) + ']',
+            text,
+        )
+
+        # 5b. Convert traditional BibTeX bibliography commands → biblatex if needed
+        # Replace \bibliographystyle{...} + \bibliography{...} with \printbibliography
+        text = re.sub(r'\\bibliographystyle\{[^}]+\}\s*', '', text)
+        text = re.sub(r'\\bibliography\{([^}]+)\}', r'\\printbibliography', text)
+        # Ensure biblatex is loaded if \printbibliography is present
+        if r'\printbibliography' in text and 'biblatex' not in text:
+            text = re.sub(
+                r'(\\documentclass(?:\[.*?\])?\{.*?\})',
+                lambda m: m.group(0) + '\n\\usepackage[backend=bibtex,style=authoryear]{biblatex}\n\\addbibresource{references.bib}',
+                text, count=1,
+            )
+
         # 5. Remove duplicate \begin{document} — keep only the first occurrence
         doc_starts = [m.start() for m in re.finditer(r'\\begin\{document\}', text)]
         if len(doc_starts) > 1:
@@ -947,12 +985,15 @@ Return ONLY the completion text, nothing else. No explanations."""
         self, source_text: str, latex: str, api_key: Optional[str]
     ) -> str:
         """
-        Extract \\cite{} keys from generated LaTeX, then ask Flash to produce
-        matching BibTeX entries from the source reference list.
-        Returns a BibTeX string, or empty string on failure.
+        Extract \\cite{} keys from generated LaTeX, ask Flash to produce matching
+        BibTeX entries, and return the raw BibTeX content (no filecontents wrapper).
+        Returns an empty string on failure.
         """
-        # Extract all cited keys
-        cited_keys = sorted(set(re.findall(r'\\cite\{([^}]+)\}', latex)))
+        # Extract all cited keys (handle \cite{key1,key2} multi-key form)
+        raw_keys = re.findall(r'\\cite(?:\[.*?\])?\{([^}]+)\}', latex)
+        cited_keys = sorted(set(
+            k.strip() for group in raw_keys for k in group.split(',') if k.strip()
+        ))
         if not cited_keys:
             return ""
 
@@ -965,16 +1006,19 @@ Return ONLY the completion text, nothing else. No explanations."""
 
         prompt = (
             "You are a BibTeX formatter. Given the citation keys used in a LaTeX document "
-            "and the reference list from the source paper, produce a .bib file with a "
-            "BibTeX entry for every cited key.\n\n"
+            "and the reference list from the source paper, produce valid BibTeX entries.\n\n"
             f"CITATION KEYS NEEDED: {', '.join(cited_keys)}\n\n"
             f"SOURCE REFERENCE LIST:\n{ref_section}\n\n"
             "RULES:\n"
-            "- Use the citation keys exactly as listed above.\n"
-            "- Infer author, title, year, journal/booktitle, volume, pages, doi from the reference list.\n"
-            "- If a key cannot be matched to a reference, create a placeholder entry.\n"
-            "- Output ONLY valid BibTeX — no explanations, no markdown fences.\n"
-            "- Start the first entry immediately.\n"
+            "- Output one BibTeX entry (@article, @book, @misc, @techreport, etc.) per citation key.\n"
+            "- Use the citation key exactly as listed in CITATION KEYS NEEDED.\n"
+            "- Populate author, title, year, journal/booktitle, volume, number, pages, doi, url "
+            "fields from the reference list — omit fields you cannot determine.\n"
+            "- For institutional authors (e.g. government agencies) use double braces: "
+            "author = {{Bureau of Labor Statistics}}.\n"
+            "- If a key cannot be matched to a source reference, create a plausible placeholder.\n"
+            "- Output ONLY valid BibTeX — no explanations, no markdown fences, no comments.\n"
+            "- Start the first @entry immediately on line 1.\n"
         )
         try:
             text, _ = await self._call_api(
@@ -982,7 +1026,6 @@ Return ONLY the completion text, nothing else. No explanations."""
                 max_tokens=8192, api_key=api_key
             )
             bib = self._strip_code_fences(text).strip()
-            # Sanity check: must contain at least one @article/@book/@misc
             if re.search(r'@\w+\{', bib):
                 return bib
         except Exception as e:
@@ -1075,19 +1118,78 @@ Provide helpful, concise assistance. If suggesting code changes, show the LaTeX 
             "- For bibliography/citations: use \\cite{{key}}, ensure matching \\bibitem{{key}} in .bib.\n"
         )
 
+    @staticmethod
+    def _window_document(
+        document: str,
+        cursor_line: Optional[int] = None,
+        selection: Optional[dict] = None,
+        window_half: int = 120,
+    ) -> Tuple[str, int, int]:
+        """
+        Return (windowed_doc, preamble_line_count, body_window_start).
+
+        preamble_line_count  — number of leading lines kept verbatim (up to and
+                               including \\begin{document}).
+        body_window_start    — 0-based index into the *body* (post-preamble) lines
+                               where the window begins.  Used to translate the
+                               model's line numbers back to the original document.
+
+        Translation rule for a change at windowed line W (1-based):
+          - If W <= preamble_line_count → original line = W  (no offset)
+          - Otherwise                  → original line = W + body_window_start
+        """
+        lines = document.split('\n')
+
+        # Locate end of preamble
+        preamble_end = 0
+        for i, line in enumerate(lines):
+            if r'\begin{document}' in line:
+                preamble_end = i + 1  # exclusive upper bound
+                break
+
+        preamble = lines[:preamble_end]
+        body = lines[preamble_end:]
+
+        # Determine centre of window inside body (0-based body index)
+        if selection:
+            start_b = max(0, selection['start_line'] - preamble_end - 1)
+            end_b   = max(0, selection['end_line']   - preamble_end - 1)
+            center_b = (start_b + end_b) // 2
+            half = max(window_half, (end_b - start_b) + 30)
+        elif cursor_line:
+            center_b = max(0, cursor_line - preamble_end - 1)
+            half = window_half
+        else:
+            # No cursor hint — send preamble + first portion of body unchanged
+            return document, preamble_end, 0
+
+        center_b  = max(0, min(center_b, len(body) - 1))
+        body_start = max(0, center_b - half)
+        body_end   = min(len(body), center_b + half + 1)
+
+        windowed = '\n'.join(preamble + body[body_start:body_end])
+        return windowed, preamble_end, body_start
+
     async def agent_edit(self, document: str, instruction: str,
                         model: str = "pro",
                         selection: Optional[dict] = None,
                         project_files: Optional[List[Dict]] = None,
-                        file_name: Optional[str] = None) -> Tuple[Dict[str, Any], int]:
+                        file_name: Optional[str] = None,
+                        cursor_line: Optional[int] = None) -> Tuple[Dict[str, Any], int]:
         model_name = FLASH_MODEL if model == "flash" else PRO_MODEL
 
-        # Truncate document if too long to prevent token limit issues
-        max_doc_length = 15000  # characters
+        # Window the document around the cursor / selection instead of a hard truncation
+        windowed_doc, preamble_lines, body_window_start = self._window_document(
+            document, cursor_line=cursor_line, selection=selection
+        )
+
+        # Hard-cap only when no cursor hint is available (legacy fallback)
+        max_doc_length = 15000
         truncated = False
-        if len(document) > max_doc_length:
-            document = document[:max_doc_length]
+        if cursor_line is None and selection is None and len(windowed_doc) > max_doc_length:
+            windowed_doc = windowed_doc[:max_doc_length]
             truncated = True
+        document = windowed_doc
 
         selection_context = ""
         if selection:
@@ -1142,7 +1244,7 @@ Return a JSON object matching the schema exactly."""
                         clean_text = clean_text[4:].strip()
             
             result = json.loads(clean_text)
-            
+
             # Validate response structure
             if not isinstance(result, dict):
                 raise ValueError("Response is not a JSON object")
@@ -1150,7 +1252,17 @@ Return a JSON object matching the schema exactly."""
                 result["explanation"] = "AI suggested changes"
             if "changes" not in result:
                 result["changes"] = []
-            
+
+            # Translate windowed line numbers back to original document line numbers.
+            # Rule: for body lines (windowed_line > preamble_lines):
+            #   original_line = windowed_line + body_window_start
+            if body_window_start > 0:
+                for change in result["changes"]:
+                    for key in ("start_line", "end_line"):
+                        val = change.get(key)
+                        if isinstance(val, int) and val > preamble_lines:
+                            change[key] = val + body_window_start
+
             return result, tokens
         except (json.JSONDecodeError, ValueError) as e:
             # Fallback response with more info
@@ -1519,6 +1631,7 @@ Return ONLY the improved LaTeX code. Do NOT wrap in markdown code fences."""
         selection: Optional[dict] = None,
         project_files: Optional[List[Dict]] = None,
         file_name: Optional[str] = None,
+        cursor_line: Optional[int] = None,
     ):
         """
         Async generator for agent edit with automatic continuation on token cap.
@@ -1532,7 +1645,7 @@ Return ONLY the improved LaTeX code. Do NOT wrap in markdown code fences."""
         total_tokens = 0
 
         try:
-            result, tokens = await self.agent_edit(document, instruction, model, selection, project_files, file_name)
+            result, tokens = await self.agent_edit(document, instruction, model, selection, project_files, file_name, cursor_line)
             total_tokens = tokens
             yield {"type": "result", "data": result, "tokens": total_tokens}
 

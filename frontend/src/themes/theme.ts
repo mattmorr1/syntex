@@ -279,11 +279,59 @@ export const lightTheme = createTheme({
   typography: commonTypography,
   components: {
     ...commonComponents,
+    MuiCssBaseline: {
+      styleOverrides: {
+        body: {
+          scrollbarColor: '#d4d4d8 transparent',
+          '&::-webkit-scrollbar, & *::-webkit-scrollbar': {
+            width: 5,
+            height: 5,
+          },
+          '&::-webkit-scrollbar-thumb, & *::-webkit-scrollbar-thumb': {
+            borderRadius: 10,
+            backgroundColor: '#d4d4d8',
+            '&:hover': {
+              backgroundColor: '#a1a1aa',
+            },
+          },
+          '&::-webkit-scrollbar-track, & *::-webkit-scrollbar-track': {
+            backgroundColor: 'transparent',
+          },
+        },
+      },
+    },
+    MuiPaper: {
+      styleOverrides: {
+        root: {
+          borderRadius: 10,
+          backgroundImage: 'none',
+        },
+      },
+    },
     MuiCard: {
       styleOverrides: {
         root: {
           borderRadius: 10,
           border: '1px solid #e4e4e7',
+          backgroundImage: 'none',
+        },
+      },
+    },
+    MuiMenu: {
+      styleOverrides: {
+        paper: {
+          border: '1px solid #e4e4e7',
+          backgroundImage: 'none',
+          boxShadow: '0 4px 16px rgba(0,0,0,0.08)',
+        },
+      },
+    },
+    MuiTooltip: {
+      styleOverrides: {
+        tooltip: {
+          backgroundColor: '#18181b',
+          color: '#e4e4e7',
+          fontSize: 11,
         },
       },
     },
@@ -338,15 +386,6 @@ export const lightTheme = createTheme({
           '&:hover': {
             backgroundColor: 'rgba(0, 0, 0, 0.04)',
           },
-        },
-      },
-    },
-    MuiTooltip: {
-      styleOverrides: {
-        tooltip: {
-          backgroundColor: '#1e1e1e',
-          color: '#ffffff',
-          fontSize: 11,
         },
       },
     },

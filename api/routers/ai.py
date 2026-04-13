@@ -108,6 +108,7 @@ async def agent_edit_stream(request: AgentEditRequest, user: dict = Depends(get_
                 selection=selection_dict,
                 project_files=request.project_files,
                 file_name=request.file_name,
+                cursor_line=request.cursor_line,
             ):
                 if event["type"] == "chunk":
                     yield f"data: {json_lib.dumps({'type': 'chunk', 'text': event['text']})}\n\n"
