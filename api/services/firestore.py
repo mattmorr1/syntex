@@ -42,7 +42,9 @@ class FirestoreService:
             if os.path.exists(key_path):
                 if not firebase_admin._apps:
                     cred = credentials.Certificate(key_path)
-                    firebase_admin.initialize_app(cred)
+                    firebase_admin.initialize_app(cred, {
+                        "storageBucket": Config.FIREBASE_STORAGE_BUCKET,
+                    })
                 self.db = firestore.client()
                 self.enabled = True
                 print("Firebase initialized successfully")

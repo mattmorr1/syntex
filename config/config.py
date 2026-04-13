@@ -6,6 +6,7 @@ load_dotenv()
 class Config:
     # Firebase Configuration
     FIREBASE_KEY_PATH = os.getenv("FIREBASE_KEY_PATH", "firebase-key.json")
+    FIREBASE_STORAGE_BUCKET = os.getenv("FIREBASE_STORAGE_BUCKET", "uea-app-470816.firebasestorage.app")
     
     # Gemini AI Configuration
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
