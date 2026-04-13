@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import SyntexLogo from '../common/SyntexLogo';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
@@ -67,6 +67,8 @@ function parseLatexErrors(errorLog: string | null): CompileError[] {
   }
   return errors;
 }
+
+interface OutlineItem { label: string; level: number; line: number; }
 
 const FILE_ICONS: Record<string, React.ReactNode> = {
   tex: <Description fontSize="small" />,
@@ -264,33 +266,27 @@ export function Editor() {
       return;
     }
 
-    // Use original filename, deduplicate if already in project
-    let fileName = imgFile.name;
-    const existingNames = new Set(currentProject?.files.map((f: { name: string }) => f.name) ?? []);
-    if (existingNames.has(fileName)) {
-      const base = fileName.replace(/\.[^.]+$/, '');
-      fileName = `${base}_${Date.now()}.${ext}`;
+    if (!currentProject?.id) return;
+
+    try {
+      // Upload to GCS via backend — avoids storing large base64 in Firestore
+      const { added } = await api.addProjectImages(currentProject.id, [imgFile]);
+      const fileName = added[0];
+      if (!fileName) throw new Error('No filename returned');
+
+      // Store gcs:// ref in local state (same format backend uses)
+      const gcsRef = `gcs://projects/${currentProject.id}/images/${fileName}`;
+      addFile({ name: fileName, content: gcsRef, type: ext as 'png' | 'jpg' });
+
+      // Insert \includegraphics snippet at cursor in currently active .tex file
+      const snippet = `\n\\begin{figure}[htbp]\n  \\centering\n  \\includegraphics[width=0.8\\textwidth]{${fileName}}\n  \\caption{Caption here}\n  \\label{fig:${fileName.replace(/\.[^.]+$/, '')}}\n\\end{figure}\n`;
+      monacoEditorRef.current?.insertText(snippet);
+
+      setAddMenuAnchor(null);
+      setSnackbar({ open: true, message: `Image "${fileName}" added`, severity: 'success' });
+    } catch (err: any) {
+      setSnackbar({ open: true, message: err.message || 'Image upload failed', severity: 'error' });
     }
-
-    // Read as base64 (strip data URL prefix)
-    const base64 = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const result = reader.result as string;
-        resolve(result.split(',')[1]);
-      };
-      reader.onerror = reject;
-      reader.readAsDataURL(imgFile);
-    });
-
-    addFile({ name: fileName, content: base64, type: ext as 'png' | 'jpg' });
-
-    // Insert \includegraphics snippet at cursor in currently active .tex file
-    const snippet = `\n\\begin{figure}[htbp]\n  \\centering\n  \\includegraphics[width=0.8\\textwidth]{${fileName}}\n  \\caption{Caption here}\n  \\label{fig:${fileName.replace(/\.[^.]+$/, '')}}\n\\end{figure}\n`;
-    monacoEditorRef.current?.insertText(snippet);
-
-    setAddMenuAnchor(null);
-    setSnackbar({ open: true, message: `Image "${fileName}" added`, severity: 'success' });
   };
 
   const handleTitleSave = async () => {
@@ -355,6 +351,23 @@ export function Editor() {
   // Image files are binary — skip Monaco for them
   const isImageFile = (name: string) => /\.(png|jpe?g)$/i.test(name);
 
+  // Parse document outline from active .tex file
+  const outline = useMemo<OutlineItem[]>(() => {
+    if (!activeFile?.endsWith('.tex')) return [];
+    const LEVELS: Record<string, number> = {
+      part: 0, chapter: 1, section: 2, subsection: 3, subsubsection: 4,
+    };
+    const items: OutlineItem[] = [];
+    const lines = activeFileContent.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(/^\\(part|chapter|section|subsection|subsubsection)\*?\{([^}]*)\}/);
+      if (m) {
+        items.push({ label: m[2].trim() || m[1], level: LEVELS[m[1]], line: i + 1 });
+      }
+    }
+    return items;
+  }, [activeFile, activeFileContent]);
+
   if (loading) {
     return (
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', bgcolor: 'background.default' }}>
@@ -367,9 +380,9 @@ export function Editor() {
     <PanelResizeHandle style={{ width: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'col-resize' }}>
       <Box sx={{
         width: '3px', height: '32px', borderRadius: 2,
-        bgcolor: 'rgba(255,255,255,0.08)',
+        bgcolor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.12)',
         transition: 'background 0.15s',
-        '&:hover': { bgcolor: 'rgba(255,255,255,0.3)' },
+        '&:hover': { bgcolor: isDark ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.3)' },
       }} />
     </PanelResizeHandle>
   );
@@ -460,14 +473,14 @@ export function Editor() {
               sx={{
                 display: 'flex', alignItems: 'center', gap: 0.75,
                 px: 1.5, py: 0.5, borderRadius: '8px',
-                bgcolor: 'primary.main', color: '#000', border: 'none',
+                bgcolor: 'primary.main', color: 'primary.contrastText', border: 'none',
                 cursor: 'pointer', fontSize: 11, fontWeight: 500, fontFamily: 'inherit',
                 transition: 'opacity 0.15s',
                 '&:hover': { opacity: 0.85 },
                 '&:disabled': { opacity: 0.5 },
               }}
             >
-              {isCompiling ? <CircularProgress size={12} sx={{ color: '#000' }} /> : <PlayArrow sx={{ fontSize: 14 }} />}
+              {isCompiling ? <CircularProgress size={12} sx={{ color: 'primary.contrastText' }} /> : <PlayArrow sx={{ fontSize: 14 }} />}
               Compile
             </Box>
           </Tooltip>
@@ -479,7 +492,7 @@ export function Editor() {
           </Tooltip>
 
           <Tooltip title="Download PDF">
-            <IconButton size="small" onClick={() => window.open(`/download-pdf/${projectId}`)} disabled={!pdfUrl} sx={{ p: 0.5 }}>
+            <IconButton size="small" onClick={() => api.downloadPdf(projectId!, currentProject?.name || 'document').catch(err => setSnackbar({ open: true, message: err.message, severity: 'error' }))} disabled={!pdfUrl} sx={{ p: 0.5 }}>
               <Download sx={{ fontSize: 16 }} />
             </IconButton>
           </Tooltip>
@@ -556,7 +569,7 @@ export function Editor() {
 
               {/* File list — hidden when collapsed */}
               {!sidebarCollapsed && (
-                <List dense sx={{ flex: 1, overflow: 'auto', py: 0.5 }}>
+                <List dense sx={{ flex: '0 1 auto', overflow: 'auto', py: 0.5, minHeight: 0 }}>
                   {currentProject?.files.map((file: { name: string; type: string }) => (
                     <ListItem
                       key={file.name}
@@ -624,6 +637,63 @@ export function Editor() {
                     </ListItem>
                   ))}
                 </List>
+              )}
+
+              {/* Outline panel — bottom half, only when sidebar expanded and active file is .tex */}
+              {!sidebarCollapsed && (
+                <Box sx={{
+                  flex: 1,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  borderTop: `1px solid ${accentBorder}`,
+                  minHeight: 0,
+                  overflow: 'hidden',
+                }}>
+                  <Box sx={{
+                    px: 1.5, py: 0.75, flexShrink: 0,
+                    display: 'flex', alignItems: 'center',
+                    borderBottom: outline.length > 0 ? `1px solid ${accentBorder}` : 'none',
+                  }}>
+                    <Typography sx={{ fontSize: 10, color: 'text.secondary', fontWeight: 500, letterSpacing: 0.5, textTransform: 'uppercase' }}>
+                      Outline
+                    </Typography>
+                  </Box>
+                  {outline.length === 0 ? (
+                    <Box sx={{ px: 1.5, py: 1 }}>
+                      <Typography sx={{ fontSize: 10, color: 'text.disabled', fontStyle: 'italic' }}>
+                        {activeFile?.endsWith('.tex') ? 'No sections found' : 'Open a .tex file'}
+                      </Typography>
+                    </Box>
+                  ) : (
+                    <List dense sx={{ flex: 1, overflow: 'auto', py: 0.25 }}>
+                      {outline.map((item, idx) => (
+                        <ListItem key={idx} disablePadding sx={{ px: 0.5 }}>
+                          <ListItemButton
+                            onClick={() => monacoEditorRef.current?.goToLine(item.line)}
+                            sx={{
+                              borderRadius: '4px',
+                              py: 0.2,
+                              minHeight: 24,
+                              pl: 0.5 + item.level * 1.2,
+                            }}
+                          >
+                            <ListItemText
+                              primary={item.label}
+                              primaryTypographyProps={{
+                                variant: 'caption',
+                                noWrap: true,
+                                fontSize: item.level <= 1 ? 11 : 10.5,
+                                fontWeight: item.level <= 2 ? 500 : 400,
+                                color: item.level === 0 ? 'text.primary' : item.level <= 2 ? 'text.primary' : 'text.secondary',
+                                sx: { opacity: item.level >= 4 ? 0.7 : 1 },
+                              }}
+                            />
+                          </ListItemButton>
+                        </ListItem>
+                      ))}
+                    </List>
+                  )}
+                </Box>
               )}
             </Box>
 
@@ -747,6 +817,7 @@ export function Editor() {
                   document={activeFileContent}
                   fileName={activeFile || undefined}
                   selection={editorSelection}
+                  cursorLine={monacoEditorRef.current?.getCursorLine()}
                   projectFiles={currentProject?.files}
                   compileError={compileError}
                   onApplyChanges={(newContent) => {
@@ -784,7 +855,7 @@ export function Editor() {
               '&:hover': {
                 bgcolor: 'primary.main',
                 borderColor: 'primary.main',
-                '& .chat-icon': { color: '#fff' },
+                '& .chat-icon': { color: 'primary.contrastText' },
               },
             }}
           >

@@ -120,6 +120,7 @@ class AgentEditRequest(BaseModel):
     model: Optional[Literal["flash", "pro"]] = "pro"
     selection: Optional[SelectionContext] = None
     project_files: Optional[List[Dict]] = None  # [{name, content, type}, ...] for supporting files
+    cursor_line: Optional[int] = None  # 1-based line number of the cursor in the editor
 
 class DiffChange(BaseModel):
     start_line: int

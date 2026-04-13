@@ -57,6 +57,7 @@ interface AgentPanelProps {
   document: string;
   fileName?: string;
   selection?: SelectionInfo | null;
+  cursorLine?: number;
   projectFiles?: ProjectFile[];
   compileError?: string | null;
   onApplyChanges: (newContent: string) => void;
@@ -91,6 +92,7 @@ export function AgentPanel({
   document,
   fileName,
   selection,
+  cursorLine,
   projectFiles,
   compileError,
   onApplyChanges,
@@ -214,13 +216,14 @@ export function AgentPanel({
         },
         supportingFiles,
         fileName,
+        cursorLine,
       );
     } catch (err: any) {
       setError(err.message || 'Failed to process request');
     } finally {
       setLoading(false);
     }
-  }, [instruction, lastInstruction, explanation, changes, tokensUsed, projectId, document, fileName, aiModel, selection, compileError, dismissedError, projectFiles]);
+  }, [instruction, lastInstruction, explanation, changes, tokensUsed, projectId, document, fileName, aiModel, selection, cursorLine, compileError, dismissedError, projectFiles]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (atSuggestions.length > 0 && (e.key === 'Escape')) {

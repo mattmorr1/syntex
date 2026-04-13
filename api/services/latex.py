@@ -37,6 +37,8 @@ class LaTeXService:
                     text = f["content"]
                     if f.get("type") == "cls" or file_path.endswith(".cls"):
                         text = self._patch_cls(text)
+                    if file_path.endswith(".tex"):
+                        text = self._clean_tex_artifacts(text)
                     with open(file_path, "w", encoding="utf-8") as fp:
                         fp.write(text)
             
@@ -57,12 +59,12 @@ class LaTeXService:
                 timeout=self.timeout
             )
 
-            # Check if bibtex is needed
+            # Check if bibtex is needed (plain bibtex: \citation; biblatex+bibtex: \abx@aux@cite)
             needs_rerun = False
             if os.path.exists(aux_file):
                 with open(aux_file, "r") as f:
                     aux_content = f.read()
-                if "\\citation" in aux_content:
+                if "\\citation" in aux_content or "\\abx@aux@cite" in aux_content:
                     subprocess.run(
                         ["bibtex", main_file.replace(".tex", "")],
                         cwd=temp_dir,
@@ -103,6 +105,37 @@ class LaTeXService:
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
     
+    @staticmethod
+    def _clean_tex_artifacts(text: str) -> str:
+        """
+        Strip model-generated LaTeX artifacts that cause compilation errors or
+        silently drop characters at render time.  Mirrors _fix_latex_artifacts in
+        gemini.py so that pre-existing (already-stored) documents are cleaned on
+        every compile, not just at generation time.
+        """
+        import re
+
+        # --- \t tie-after accent (model uses \t as a tab/indent) ---
+        # \t{X} → X  (braced form, e.g. \t{T}his → This)
+        text = re.sub(r'\\t\{(.)\}', r'\1', text)
+        # \t <lowercase> → uppercase  (e.g. \t his → His)
+        text = re.sub(r'\\t\s+([a-z])', lambda m: m.group(1).upper(), text)
+        # \t <uppercase or non-letter> → just remove the \t + whitespace
+        text = re.sub(r'\\t\s+', '', text)
+        # \t immediately before a capital letter with no space  (e.g. \tThis)
+        # — LaTeX would parse this as undefined \tThis, so safe to strip
+        text = re.sub(r'\\t([A-Z])', r'\1', text)
+
+        # --- Decorative first-letter commands (no package available at compile) ---
+        # \lettrine{T}{his} → This,  \dropcap{T}his → This,  etc.
+        for _dc in ['lettrine', 'Lettrine', 'dropcap', 'initial', 'drop', 'yinipar']:
+            # two-arg form: \cmd{T}{his} → This
+            text = re.sub(rf'\\{_dc}\{{([A-Za-z])\}}\{{([^}}]*)\}}', r'\1\2', text)
+            # one-arg form: \cmd{T}his → This
+            text = re.sub(rf'\\{_dc}\{{([A-Za-z])\}}', r'\1', text)
+
+        return text
+
     @staticmethod
     def _patch_cls(text: str) -> str:
         """
@@ -187,6 +220,8 @@ class LaTeXService:
 \usepackage{graphicx}
 \usepackage{hyperref}
 \usepackage[margin=1in]{geometry}
+\usepackage[backend=bibtex,style=authoryear]{biblatex}
+\addbibresource{references.bib}
 
 \title{Your Paper Title}
 \author{Author Name\\
@@ -213,8 +248,7 @@ Results presentation.
 \section{Conclusion}
 Conclusions.
 
-\bibliographystyle{plain}
-\bibliography{references}
+\printbibliography
 
 \end{document}"""
 
@@ -251,6 +285,8 @@ Your solution here.
 \usepackage{hyperref}
 \usepackage[margin=1.25in]{geometry}
 \usepackage{setspace}
+\usepackage[backend=bibtex,style=authoryear]{biblatex}
+\addbibresource{references.bib}
 \doublespacing
 
 \title{Thesis Title}
@@ -276,8 +312,7 @@ Results.
 \chapter{Conclusion}
 Conclusions.
 
-\bibliographystyle{plain}
-\bibliography{references}
+\printbibliography
 
 \end{document}"""
 
