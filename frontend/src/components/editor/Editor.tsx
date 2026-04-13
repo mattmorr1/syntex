@@ -30,6 +30,7 @@ import {
   ZoomIn,
   ZoomOut,
   Delete,
+  DriveFileRenameOutline,
   MoreVert,
   Settings,
   ChevronLeft,
@@ -42,9 +43,30 @@ import { useSettingsStore } from '../../store/settingsStore';
 import { useEditorStore } from '../../store/editorStore';
 import { useAuth } from '../../hooks/useAuth';
 import { api } from '../../services/api';
-import { MonacoEditor, MonacoEditorHandle, EditorSelection } from './MonacoEditor';
+import { MonacoEditor, MonacoEditorHandle, EditorSelection, CompileError } from './MonacoEditor';
 import { AgentPanel } from '../ai/AgentPanel';
 import { PdfViewer } from './PdfViewer';
+
+/** Parse LaTeX log output into line-number + message pairs for Monaco markers. */
+function parseLatexErrors(errorLog: string | null): CompileError[] {
+  if (!errorLog) return [];
+  const errors: CompileError[] = [];
+  const lines = errorLog.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const errLine = lines[i];
+    if (!errLine.startsWith('!')) continue;
+    const message = errLine.slice(1).trim();
+    // Look ahead up to 5 lines for l.<number>
+    for (let j = i + 1; j < Math.min(i + 6, lines.length); j++) {
+      const m = lines[j].match(/^l\.(\d+)/);
+      if (m) {
+        errors.push({ line: parseInt(m[1], 10), message });
+        break;
+      }
+    }
+  }
+  return errors;
+}
 
 const FILE_ICONS: Record<string, React.ReactNode> = {
   tex: <Description fontSize="small" />,
@@ -80,6 +102,7 @@ export function Editor() {
     setUpdatedAt,
     addFile,
     removeFile,
+    renameFile,
   } = useEditorStore();
 
   const [loading, setLoading] = useState(true);
@@ -93,6 +116,9 @@ export function Editor() {
   const [zoom, setZoom] = useState(100);
   const [addMenuAnchor, setAddMenuAnchor] = useState<null | HTMLElement>(null);
   const [fileMenuAnchor, setFileMenuAnchor] = useState<{ el: HTMLElement; fileName: string } | null>(null);
+  const [renamingFile, setRenamingFile] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+  const renameInputRef = useRef<HTMLInputElement>(null);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleValue, setTitleValue] = useState('');
   const titleInputRef = useRef<HTMLInputElement>(null);
@@ -190,6 +216,25 @@ export function Editor() {
       setActiveFile(name);
     }
     setAddMenuAnchor(null);
+  };
+
+  const handleStartRename = (fileName: string) => {
+    setFileMenuAnchor(null);
+    setRenamingFile(fileName);
+    setRenameValue(fileName);
+    setTimeout(() => renameInputRef.current?.select(), 50);
+  };
+
+  const handleCommitRename = () => {
+    if (!renamingFile || !renameValue.trim()) { setRenamingFile(null); return; }
+    const newName = renameValue.trim();
+    if (newName === renamingFile) { setRenamingFile(null); return; }
+    if (currentProject?.files.some(f => f.name === newName)) {
+      setSnackbar({ open: true, message: `A file named "${newName}" already exists`, severity: 'error' });
+      return;
+    }
+    renameFile(renamingFile, newName);
+    setRenamingFile(null);
   };
 
   const handleDeleteFile = (fileName: string) => {
@@ -539,15 +584,42 @@ export function Editor() {
                         <ListItemIcon sx={{ minWidth: 22 }}>
                           {FILE_ICONS[file.type] || <Description fontSize="small" />}
                         </ListItemIcon>
-                        <ListItemText
-                          primary={file.name}
-                          primaryTypographyProps={{
-                            variant: 'caption',
-                            noWrap: true,
-                            fontWeight: file.name === currentProject.mainFile ? 600 : 400,
-                            fontSize: 11,
-                          }}
-                        />
+                        {renamingFile === file.name ? (
+                          <input
+                            ref={renameInputRef}
+                            value={renameValue}
+                            onChange={(e) => setRenameValue(e.target.value)}
+                            onBlur={handleCommitRename}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') handleCommitRename();
+                              if (e.key === 'Escape') setRenamingFile(null);
+                              e.stopPropagation();
+                            }}
+                            onClick={(e) => e.stopPropagation()}
+                            autoFocus
+                            style={{
+                              fontSize: 11,
+                              width: '100%',
+                              border: 'none',
+                              outline: '1px solid #7c3aed',
+                              borderRadius: 3,
+                              padding: '1px 4px',
+                              background: 'transparent',
+                              color: 'inherit',
+                              fontFamily: 'inherit',
+                            }}
+                          />
+                        ) : (
+                          <ListItemText
+                            primary={file.name}
+                            primaryTypographyProps={{
+                              variant: 'caption',
+                              noWrap: true,
+                              fontWeight: file.name === currentProject.mainFile ? 600 : 400,
+                              fontSize: 11,
+                            }}
+                          />
+                        )}
                       </ListItemButton>
                     </ListItem>
                   ))}
@@ -565,6 +637,13 @@ export function Editor() {
             </Menu>
 
             <Menu anchorEl={fileMenuAnchor?.el} open={Boolean(fileMenuAnchor)} onClose={() => setFileMenuAnchor(null)}>
+              <MenuItem
+                onClick={() => fileMenuAnchor && handleStartRename(fileMenuAnchor.fileName)}
+                sx={{ fontSize: 12 }}
+              >
+                <DriveFileRenameOutline sx={{ mr: 1, fontSize: 14 }} />
+                Rename
+              </MenuItem>
               <MenuItem
                 onClick={() => fileMenuAnchor && handleDeleteFile(fileMenuAnchor.fileName)}
                 sx={{ fontSize: 12, color: 'error.main' }}
@@ -604,6 +683,7 @@ export function Editor() {
                     projectId={currentProject?.id || ''}
                     onSelectionChange={setEditorSelection}
                     clsContent={currentProject?.files.find((f: { name: string }) => f.name.endsWith('.cls'))?.content}
+                    compileErrors={parseLatexErrors(compileError)}
                   />
                 ) : null}
               </Box>
