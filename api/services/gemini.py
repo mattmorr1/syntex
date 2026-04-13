@@ -1035,10 +1035,51 @@ Provide helpful, concise assistance. If suggesting code changes, show the LaTeX 
             return ""
         return "\nPROJECT FILES (for reference — do not reproduce unless instructed):\n" + "\n\n".join(context_parts) + "\n"
 
+    @staticmethod
+    def _file_type_rules(file_name: Optional[str]) -> str:
+        """Return file-type-specific editing rules for the prompt."""
+        if not file_name:
+            return ""
+        ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
+        if ext == "cls":
+            return (
+                f"FILE TYPE: LaTeX class file ({file_name})\n"
+                "Class-file-specific rules:\n"
+                "- Use \\RequirePackage{{}} instead of \\usepackage{{}} to load packages.\n"
+                "- Use \\ProvidesClass{{}} or \\ProvidesPackage{{}} for identification.\n"
+                "- Define commands with \\newcommand, \\renewcommand, or \\def.\n"
+                "- Do NOT add \\begin{{document}} or \\end{{document}} — class files have no document body.\n"
+                "- Class options are handled with \\DeclareOption / \\ProcessOptions.\n"
+            )
+        if ext == "bib":
+            return (
+                f"FILE TYPE: BibTeX bibliography file ({file_name})\n"
+                "BibTeX-specific rules:\n"
+                "- Entries are @type{{key, field = {{value}}, ...}} — preserve this syntax exactly.\n"
+                "- Do not add LaTeX commands outside of entry field values.\n"
+            )
+        if ext == "sty":
+            return (
+                f"FILE TYPE: LaTeX package file ({file_name})\n"
+                "Package-file-specific rules:\n"
+                "- Use \\RequirePackage{{}} to load dependencies.\n"
+                "- Use \\ProvidesPackage{{}} for identification.\n"
+                "- Do NOT add \\begin{{document}} or \\end{{document}}.\n"
+            )
+        # Default: treat as .tex
+        return (
+            f"FILE TYPE: LaTeX source file ({file_name})\n"
+            "Source-file rules:\n"
+            "- For new packages: add \\usepackage{{}} to the preamble if not already present.\n"
+            "- Never break existing \\label{{}}–\\ref{{}} pairs unless explicitly asked.\n"
+            "- For bibliography/citations: use \\cite{{key}}, ensure matching \\bibitem{{key}} in .bib.\n"
+        )
+
     async def agent_edit(self, document: str, instruction: str,
                         model: str = "pro",
                         selection: Optional[dict] = None,
-                        project_files: Optional[List[Dict]] = None) -> Tuple[Dict[str, Any], int]:
+                        project_files: Optional[List[Dict]] = None,
+                        file_name: Optional[str] = None) -> Tuple[Dict[str, Any], int]:
         model_name = FLASH_MODEL if model == "flash" else PRO_MODEL
 
         # Truncate document if too long to prevent token limit issues
@@ -1059,13 +1100,14 @@ Focus your changes on these selected lines. The user's instruction likely refers
 """
 
         project_context = self._build_project_context(project_files, document)
+        file_type_rules = self._file_type_rules(file_name)
 
         # Number the document lines so the model can reference them accurately
         numbered_lines = "\n".join(f"{i+1}: {line}" for i, line in enumerate(document.split("\n")))
 
-        prompt = f"""You are an expert LaTeX editor. Your job is to make precise, surgical edits to LaTeX source files.
+        prompt = f"""You are an expert LaTeX editor. Your job is to make precise, surgical edits to the file shown below.
 {project_context}
-
+{file_type_rules}
 DOCUMENT (with line numbers):
 {numbered_lines}
 {"[Document truncated due to length]" if truncated else ""}
@@ -1079,10 +1121,7 @@ RULES:
 3. Multi-line originals must include ALL lines from start_line to end_line, joined with \\n.
 4. Make the MINIMUM number of changes needed. Do not reformat unrelated content.
 5. Preserve the document's existing indentation, spacing, and LaTeX conventions.
-6. For bibliography/citations: use \\cite{{key}}, ensure matching \\bibitem{{key}} in .bib section.
-7. For new environments, commands, or packages: add \\usepackage{{}} to preamble if not already present.
-8. Never break existing \\label{{}}–\\ref{{}} pairs unless explicitly asked.
-9. If the instruction cannot be safely fulfilled (e.g., removing a label that is referenced), explain why in "explanation" and return an empty changes list.
+9. If the instruction cannot be safely fulfilled, explain why in "explanation" and return an empty changes list.
 
 Return a JSON object matching the schema exactly."""
 
@@ -1478,7 +1517,8 @@ Return ONLY the improved LaTeX code. Do NOT wrap in markdown code fences."""
         instruction: str,
         model: str = "pro",
         selection: Optional[dict] = None,
-        project_files: Optional[List[Dict]] = None
+        project_files: Optional[List[Dict]] = None,
+        file_name: Optional[str] = None,
     ):
         """
         Async generator for agent edit with automatic continuation on token cap.
@@ -1492,7 +1532,7 @@ Return ONLY the improved LaTeX code. Do NOT wrap in markdown code fences."""
         total_tokens = 0
 
         try:
-            result, tokens = await self.agent_edit(document, instruction, model, selection, project_files)
+            result, tokens = await self.agent_edit(document, instruction, model, selection, project_files, file_name)
             total_tokens = tokens
             yield {"type": "result", "data": result, "tokens": total_tokens}
 

@@ -116,6 +116,7 @@ class AgentEditRequest(BaseModel):
     project_id: str
     instruction: str
     document: str
+    file_name: Optional[str] = None  # active file being edited (e.g. "custom.cls", "main.tex")
     model: Optional[Literal["flash", "pro"]] = "pro"
     selection: Optional[SelectionContext] = None
     project_files: Optional[List[Dict]] = None  # [{name, content, type}, ...] for supporting files

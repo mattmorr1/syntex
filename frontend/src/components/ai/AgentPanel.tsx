@@ -55,6 +55,7 @@ interface ProjectFile {
 interface AgentPanelProps {
   projectId: string;
   document: string;
+  fileName?: string;
   selection?: SelectionInfo | null;
   projectFiles?: ProjectFile[];
   compileError?: string | null;
@@ -88,6 +89,7 @@ function extractLatexStructure(doc: string): string {
 export function AgentPanel({
   projectId,
   document,
+  fileName,
   selection,
   projectFiles,
   compileError,
@@ -211,13 +213,14 @@ export function AgentPanel({
           setError(message);
         },
         supportingFiles,
+        fileName,
       );
     } catch (err: any) {
       setError(err.message || 'Failed to process request');
     } finally {
       setLoading(false);
     }
-  }, [instruction, lastInstruction, explanation, changes, tokensUsed, projectId, document, aiModel, selection, compileError, dismissedError, projectFiles]);
+  }, [instruction, lastInstruction, explanation, changes, tokensUsed, projectId, document, fileName, aiModel, selection, compileError, dismissedError, projectFiles]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (atSuggestions.length > 0 && (e.key === 'Escape')) {
