@@ -25,6 +25,29 @@ class ContentBlockedError(Exception):
         super().__init__(message)
         self.reason = reason
 
+# Schema for direct changes format (used in agent_edit primary path)
+AGENT_EDIT_CHANGES_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "explanation": {"type": "string"},
+        "changes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "start_line": {"type": "integer"},
+                    "end_line": {"type": "integer"},
+                    "original": {"type": "string"},
+                    "replacement": {"type": "string"},
+                    "reason": {"type": "string"}
+                },
+                "required": ["start_line", "end_line", "original", "replacement", "reason"]
+            }
+        }
+    },
+    "required": ["explanation", "changes"]
+}
+
 # Structured output schemas - Operation-based for token efficiency
 AGENT_EDIT_SCHEMA = {
     "type": "object",
@@ -961,31 +984,36 @@ Focus your changes on these selected lines. The user's instruction likely refers
 
         project_context = self._build_project_context(project_files, document)
 
-        prompt = f"""You are an AI agent that edits LaTeX documents.
+        # Number the document lines so the model can reference them accurately
+        numbered_lines = "\n".join(f"{i+1}: {line}" for i, line in enumerate(document.split("\n")))
+
+        prompt = f"""You are an expert LaTeX editor. Your job is to make precise, surgical edits to LaTeX source files.
 {project_context}
-Document:
-{document}
+
+DOCUMENT (with line numbers):
+{numbered_lines}
 {"[Document truncated due to length]" if truncated else ""}
 {selection_context}
-User instruction: {instruction}
 
-Analyze the document and provide specific changes. Return a JSON object with:
-{{
-  "explanation": "Brief explanation of what you will do",
-  "changes": [
-    {{
-      "start_line": <line number>,
-      "end_line": <line number>,
-      "original": "exact original text",
-      "replacement": "new text",
-      "reason": "why this change"
-    }}
-  ]
-}}
+USER INSTRUCTION: {instruction}
 
-Return ONLY valid JSON, no markdown formatting. Keep your response concise."""
+RULES:
+1. The "original" field MUST be copied verbatim from the document — it will be used for exact string matching.
+2. "start_line" and "end_line" are 1-based. For a single-line change they are equal.
+3. Multi-line originals must include ALL lines from start_line to end_line, joined with \\n.
+4. Make the MINIMUM number of changes needed. Do not reformat unrelated content.
+5. Preserve the document's existing indentation, spacing, and LaTeX conventions.
+6. For bibliography/citations: use \\cite{{key}}, ensure matching \\bibitem{{key}} in .bib section.
+7. For new environments, commands, or packages: add \\usepackage{{}} to preamble if not already present.
+8. Never break existing \\label{{}}–\\ref{{}} pairs unless explicitly asked.
+9. If the instruction cannot be safely fulfilled (e.g., removing a label that is referenced), explain why in "explanation" and return an empty changes list.
 
-        text, tokens = await self._call_api(model_name, prompt, temperature=0.2, max_tokens=16384)
+Return a JSON object matching the schema exactly."""
+
+        text, tokens = await self._call_api(
+            model_name, prompt, temperature=0.2, max_tokens=16384,
+            response_schema=AGENT_EDIT_CHANGES_SCHEMA,
+        )
         
         # Parse JSON from response
         try:

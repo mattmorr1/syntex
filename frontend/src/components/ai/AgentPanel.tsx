@@ -3,7 +3,6 @@ import {
   Box,
   Typography,
   TextField,
-  Button,
   IconButton,
   CircularProgress,
   Chip,
@@ -32,7 +31,13 @@ interface DiffChange {
   original: string;
   replacement: string;
   reason: string;
-  accepted?: boolean;
+}
+
+interface HistoryEntry {
+  instruction: string;
+  explanation: string;
+  appliedCount: number;
+  tokensUsed: number;
 }
 
 interface SelectionInfo {
@@ -97,6 +102,8 @@ export function AgentPanel({
   const [explanation, setExplanation] = useState('');
   const [changes, setChanges] = useState<DiffChange[]>([]);
   const [tokensUsed, setTokensUsed] = useState(0);
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [lastInstruction, setLastInstruction] = useState('');
   const [dismissedError, setDismissedError] = useState(false);
   // @file autocomplete
   const [atSuggestions, setAtSuggestions] = useState<string[]>([]);
@@ -152,11 +159,22 @@ export function AgentPanel({
   const handleSubmit = useCallback(async () => {
     if (!instruction.trim()) return;
 
+    // Archive current result to history before starting a new request
+    if (explanation || changes.length > 0) {
+      setHistory(prev => [...prev, {
+        instruction: lastInstruction,
+        explanation,
+        appliedCount: 0,
+        tokensUsed,
+      }]);
+    }
+
     setLoading(true);
     setError('');
     setChanges([]);
     setExplanation('');
     setTokensUsed(0);
+    setLastInstruction(instruction);
 
     const selectionPayload = selection
       ? { text: selection.text, start_line: selection.startLine, end_line: selection.endLine }
@@ -186,7 +204,7 @@ export function AgentPanel({
         },
         (result) => {
           setExplanation(result.explanation);
-          setChanges(result.changes.map((c: any) => ({ ...c, accepted: undefined })));
+          setChanges(result.changes.map((c: any) => ({ ...c })));
           setTokensUsed(result.tokens);
         },
         (message) => {
@@ -199,7 +217,7 @@ export function AgentPanel({
     } finally {
       setLoading(false);
     }
-  }, [instruction, projectId, document, aiModel, selection, compileError, dismissedError, projectFiles]);
+  }, [instruction, lastInstruction, explanation, changes, tokensUsed, projectId, document, aiModel, selection, compileError, dismissedError, projectFiles]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (atSuggestions.length > 0 && (e.key === 'Escape')) {
@@ -213,36 +231,21 @@ export function AgentPanel({
   };
 
   const handleAcceptChange = (index: number) => {
-    setChanges(prev => prev.map((c, i) => i === index ? { ...c, accepted: true } : c));
+    const change = changes[index];
+    const lines = document.split('\n');
+    const beforeLines = lines.slice(0, change.start_line - 1);
+    const afterLines = lines.slice(change.end_line);
+    const replacementLines = change.replacement.split('\n');
+    const newLines = [...beforeLines, ...replacementLines, ...afterLines];
+    onApplyChanges(newLines.join('\n'));
+    setChanges(prev => prev.filter((_, i) => i !== index));
   };
 
   const handleRejectChange = (index: number) => {
-    setChanges(prev => prev.map((c, i) => i === index ? { ...c, accepted: false } : c));
+    setChanges(prev => prev.filter((_, i) => i !== index));
   };
 
-  const handleApplyAll = () => {
-    const acceptedChanges = changes.filter(c => c.accepted === true);
-    if (acceptedChanges.length === 0) return;
-
-    let newDoc = document;
-    const lines = newDoc.split('\n');
-    const sortedChanges = [...acceptedChanges].sort((a, b) => b.start_line - a.start_line);
-
-    for (const change of sortedChanges) {
-      const beforeLines = lines.slice(0, change.start_line - 1);
-      const afterLines = lines.slice(change.end_line);
-      const replacementLines = change.replacement.split('\n');
-      lines.splice(0, lines.length, ...beforeLines, ...replacementLines, ...afterLines);
-    }
-
-    onApplyChanges(lines.join('\n'));
-    setChanges([]);
-    setExplanation('');
-    setInstruction('');
-  };
-
-  const acceptedCount = changes.filter(c => c.accepted === true).length;
-  const pendingCount = changes.filter(c => c.accepted === undefined).length;
+  const pendingCount = changes.length;
   const showErrorChip = !!compileError && !dismissedError;
 
   return (
@@ -293,16 +296,66 @@ export function AgentPanel({
         ref={scrollRef}
         sx={{ flex: 1, overflow: 'auto', p: 1.5, display: 'flex', flexDirection: 'column', gap: 1.5 }}
       >
+        {/* Chat history — previous turns */}
+        {history.map((entry, i) => (
+          <Box key={i} sx={{ opacity: 0.6 }}>
+            <Box sx={{ display: 'flex', gap: 0.5, mb: 0.5, justifyContent: 'flex-end' }}>
+              <Box sx={{
+                px: 1.5, py: 0.75,
+                bgcolor: 'primary.main',
+                borderRadius: '10px 10px 2px 10px',
+                maxWidth: '85%',
+              }}>
+                <Typography sx={{ fontSize: 11, color: '#fff', lineHeight: 1.4 }}>
+                  {entry.instruction}
+                </Typography>
+              </Box>
+            </Box>
+            <Box sx={{
+              bgcolor: surfaceActive,
+              borderRadius: '2px 10px 10px 10px',
+              border: `1px solid ${accentBorder}`,
+              p: 1,
+              mb: 1,
+            }}>
+              <Typography sx={{ fontSize: 11, lineHeight: 1.5, color: 'text.secondary' }}>
+                {entry.explanation}
+              </Typography>
+              {entry.tokensUsed > 0 && (
+                <Typography sx={{ mt: 0.5, fontSize: 10, color: 'text.disabled' }}>
+                  {entry.tokensUsed} tokens
+                </Typography>
+              )}
+            </Box>
+          </Box>
+        ))}
+
         {error && (
           <Alert severity="error" sx={{ py: 0.5, fontSize: 11 }}>{error}</Alert>
+        )}
+
+        {(explanation || loading) && lastInstruction && (
+          <Box sx={{ display: 'flex', gap: 0.5, mb: 0.5, justifyContent: 'flex-end' }}>
+            <Box sx={{
+              px: 1.5, py: 0.75,
+              bgcolor: 'primary.main',
+              borderRadius: '10px 10px 2px 10px',
+              maxWidth: '85%',
+            }}>
+              <Typography sx={{ fontSize: 11, color: '#fff', lineHeight: 1.4 }}>
+                {lastInstruction}
+              </Typography>
+            </Box>
+          </Box>
         )}
 
         {explanation && (
           <Box sx={{
             bgcolor: surfaceActive,
-            borderRadius: '8px',
+            borderRadius: '2px 10px 10px 10px',
             border: `1px solid ${accentBorder}`,
             p: 1.5,
+            mb: 1,
           }}>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mb: 0.75 }}>
               <SmartToy sx={{ fontSize: 12, color: 'primary.main' }} />
@@ -325,14 +378,9 @@ export function AgentPanel({
               <Typography sx={{ fontSize: 10, color: 'text.secondary', fontWeight: 500 }}>
                 Changes ({changes.length})
               </Typography>
-              <Box sx={{ display: 'flex', gap: 0.5 }}>
-                {pendingCount > 0 && (
-                  <Chip label={pendingCount} size="small" color="warning" sx={{ height: 18, fontSize: 10 }} />
-                )}
-                {acceptedCount > 0 && (
-                  <Chip label={acceptedCount} size="small" color="success" sx={{ height: 18, fontSize: 10 }} />
-                )}
-              </Box>
+              {pendingCount > 0 && (
+                <Chip label={pendingCount} size="small" color="warning" sx={{ height: 18, fontSize: 10 }} />
+              )}
             </Box>
             {changes.map((change, index) => (
               <CompactDiffCard
@@ -362,23 +410,6 @@ export function AgentPanel({
           </Box>
         )}
       </Box>
-
-      {/* Apply Button */}
-      {acceptedCount > 0 && (
-        <Box sx={{ px: 1.5, pb: 1 }}>
-          <Button
-            fullWidth
-            variant="contained"
-            color="success"
-            size="small"
-            onClick={handleApplyAll}
-            startIcon={<Check sx={{ fontSize: 14 }} />}
-            sx={{ fontSize: 11, py: 0.5 }}
-          >
-            Apply {acceptedCount} change{acceptedCount !== 1 ? 's' : ''}
-          </Button>
-        </Box>
-      )}
 
       {/* Input */}
       <Box sx={{ p: 1.5, bgcolor: 'background.default' }}>
@@ -510,20 +541,13 @@ interface CompactDiffCardProps {
 function CompactDiffCard({ change, isDark, accentBorder, onAccept, onReject }: CompactDiffCardProps) {
   const [expanded, setExpanded] = useState(true);
 
-  const getBorderColor = () => {
-    if (change.accepted === true) return 'success.main';
-    if (change.accepted === false) return 'error.main';
-    return accentBorder;
-  };
-
   return (
     <Box sx={{
       mb: 1,
       borderRadius: '4px',
       border: '1px solid',
-      borderColor: getBorderColor(),
+      borderColor: accentBorder,
       overflow: 'hidden',
-      opacity: change.accepted === false ? 0.5 : 1,
     }}>
       <Box
         sx={{
@@ -561,28 +585,14 @@ function CompactDiffCard({ change, isDark, accentBorder, onAccept, onReject }: C
           </Box>
         </Box>
 
-        {change.accepted === undefined && (
-          <Box sx={{ p: 0.5, display: 'flex', gap: 0.5, justifyContent: 'flex-end', bgcolor: 'background.paper' }}>
-            <IconButton size="small" color="error" onClick={(e) => { e.stopPropagation(); onReject(); }} sx={{ p: 0.25 }}>
-              <Clear sx={{ fontSize: 14 }} />
-            </IconButton>
-            <IconButton size="small" color="success" onClick={(e) => { e.stopPropagation(); onAccept(); }} sx={{ p: 0.25 }}>
-              <Check sx={{ fontSize: 14 }} />
-            </IconButton>
-          </Box>
-        )}
-        {change.accepted === true && (
-          <Box sx={{ px: 1, py: 0.25, bgcolor: 'rgba(34, 197, 94, 0.1)', display: 'flex', alignItems: 'center', gap: 0.5 }}>
-            <Check sx={{ fontSize: 12, color: 'success.main' }} />
-            <Typography sx={{ fontSize: 10, color: 'success.main' }}>Accepted</Typography>
-          </Box>
-        )}
-        {change.accepted === false && (
-          <Box sx={{ px: 1, py: 0.25, bgcolor: 'rgba(239, 68, 68, 0.1)', display: 'flex', alignItems: 'center', gap: 0.5 }}>
-            <Clear sx={{ fontSize: 12, color: 'error.main' }} />
-            <Typography sx={{ fontSize: 10, color: 'error.main' }}>Rejected</Typography>
-          </Box>
-        )}
+        <Box sx={{ p: 0.5, display: 'flex', gap: 0.5, justifyContent: 'flex-end', bgcolor: 'background.paper' }}>
+          <IconButton size="small" color="error" onClick={(e) => { e.stopPropagation(); onReject(); }} sx={{ p: 0.25 }}>
+            <Clear sx={{ fontSize: 14 }} />
+          </IconButton>
+          <IconButton size="small" color="success" onClick={(e) => { e.stopPropagation(); onAccept(); }} sx={{ p: 0.25 }}>
+            <Check sx={{ fontSize: 14 }} />
+          </IconButton>
+        </Box>
       </Collapse>
     </Box>
   );

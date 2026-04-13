@@ -36,6 +36,7 @@ interface EditorState {
   setUpdatedAt: (updatedAt: string) => void;
   addFile: (file: ProjectFile) => void;
   removeFile: (fileName: string) => void;
+  renameFile: (oldName: string, newName: string) => void;
 }
 
 export const useEditorStore = create<EditorState>((set) => ({
@@ -103,6 +104,28 @@ export const useEditorStore = create<EditorState>((set) => ({
         files: state.currentProject.files.filter((f) => f.name !== fileName),
       },
       activeFile: state.activeFile === fileName ? state.currentProject.mainFile : state.activeFile,
+      unsavedChanges: true,
+    };
+  }),
+
+  renameFile: (oldName, newName) => set((state) => {
+    if (!state.currentProject || !newName.trim() || newName === oldName) return state;
+    const files = state.currentProject.files.map((f) => {
+      if (f.name === oldName) return { ...f, name: newName };
+      // Update \includegraphics{oldName} references in tex files
+      if (f.type === 'tex') {
+        const escaped = oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        return { ...f, content: f.content.replace(new RegExp(escaped, 'g'), newName) };
+      }
+      return f;
+    });
+    return {
+      currentProject: {
+        ...state.currentProject,
+        files,
+        mainFile: state.currentProject.mainFile === oldName ? newName : state.currentProject.mainFile,
+      },
+      activeFile: state.activeFile === oldName ? newName : state.activeFile,
       unsavedChanges: true,
     };
   }),

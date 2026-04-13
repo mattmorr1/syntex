@@ -14,6 +14,11 @@ export interface MonacoEditorHandle {
   insertText: (text: string) => void;
 }
 
+export interface CompileError {
+  line: number;
+  message: string;
+}
+
 interface MonacoEditorProps {
   value: string;
   onChange: (value: string | undefined) => void;
@@ -21,10 +26,11 @@ interface MonacoEditorProps {
   projectId: string;
   onSelectionChange?: (selection: EditorSelection | null) => void;
   clsContent?: string;
+  compileErrors?: CompileError[];
 }
 
 export const MonacoEditor = forwardRef<MonacoEditorHandle, MonacoEditorProps>(
-function MonacoEditor({ value, onChange, fileName, projectId, onSelectionChange, clsContent }, ref) {
+function MonacoEditor({ value, onChange, fileName, projectId, onSelectionChange, clsContent, compileErrors }, ref) {
   const { mode } = useThemeStore();
   const editorRef = useRef<any>(null);
   const monacoRef = useRef<Monaco | null>(null);
@@ -75,6 +81,33 @@ function MonacoEditor({ value, onChange, fileName, projectId, onSelectionChange,
 
     return () => { clsDisposableRef.current?.dispose(); };
   }, [clsContent]);
+
+  // Set Monaco error markers from LaTeX compile errors
+  useEffect(() => {
+    const monaco = monacoRef.current;
+    const editor = editorRef.current;
+    if (!monaco || !editor) return;
+
+    const model = editor.getModel();
+    if (!model) return;
+
+    if (!compileErrors || compileErrors.length === 0) {
+      monaco.editor.setModelMarkers(model, 'latex-compile', []);
+      return;
+    }
+
+    const markers = compileErrors.map(({ line, message }) => ({
+      severity: monaco.MarkerSeverity.Error,
+      startLineNumber: line,
+      startColumn: 1,
+      endLineNumber: line,
+      endColumn: model.getLineLength(Math.min(line, model.getLineCount())) + 1,
+      message,
+      source: 'LaTeX',
+    }));
+
+    monaco.editor.setModelMarkers(model, 'latex-compile', markers);
+  }, [compileErrors]);
 
   const handleEditorMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
