@@ -25,7 +25,12 @@ class LaTeXService:
                 # Handle binary vs text files
                 if f.get("type") in ["png", "jpg", "pdf"]:
                     import base64
-                    bin_content = base64.b64decode(f["content"])
+                    raw = f["content"]
+                    from api.services.storage import is_gcs_ref, download_image
+                    if is_gcs_ref(raw):
+                        bin_content = download_image(raw)
+                    else:
+                        bin_content = base64.b64decode(raw)
                     with open(file_path, "wb") as fp:
                         fp.write(bin_content)
                 else:

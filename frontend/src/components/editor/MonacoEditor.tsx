@@ -449,6 +449,7 @@ function registerLaTeXLanguage(monaco: Monaco) {
   monaco.languages.setMonarchTokensProvider('latex', {
     tokenizer: {
       root: [
+        [/\\%/, 'string.latex'],       // \% is a literal percent sign — must come before comment rule
         [/%.*$/, 'comment.latex'],
         [/\\[a-zA-Z]+/, 'command.latex'],
         [/\$\$/, { token: 'math.latex', next: '@mathDisplay' }],

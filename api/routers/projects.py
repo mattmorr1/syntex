@@ -106,8 +106,12 @@ async def add_images_to_project(
         raise HTTPException(status_code=404, detail="Project not found")
 
     ext_type_map = {"png": "png", "jpg": "jpg", "jpeg": "jpg", "gif": "png", "bmp": "png", "pdf": "pdf"}
+    mime_map = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+                "gif": "image/gif", "bmp": "image/bmp", "pdf": "application/pdf"}
     existing_files = project.get("files", [])
     existing_names = {f["name"] for f in existing_files}
+
+    from api.services.storage import upload_image as gcs_upload
 
     new_files = list(existing_files)
     added = []
@@ -117,16 +121,18 @@ async def add_images_to_project(
             continue
         ext = (upload.filename or "image.png").rsplit(".", 1)[-1].lower()
         file_type = ext_type_map.get(ext, "png")
+        mime = mime_map.get(ext, "image/png")
         name = upload.filename or f"image.{ext}"
         # Deduplicate name
-        base, dot_ext = (name.rsplit(".", 1) + [""])[:2]
+        base_name = name.rsplit(".", 1)[0]
         candidate = name
         counter = 1
         while candidate in existing_names:
-            candidate = f"{base}_{counter}.{dot_ext or ext}"
+            candidate = f"{base_name}_{counter}.{ext}"
             counter += 1
-        b64 = base64.b64encode(raw).decode("utf-8")
-        new_files.append({"name": candidate, "content": b64, "type": file_type})
+        # Upload to GCS instead of storing base64 in Firestore
+        gcs_ref = gcs_upload(raw, project_id, candidate, mime)
+        new_files.append({"name": candidate, "content": gcs_ref, "type": file_type})
         existing_names.add(candidate)
         added.append(candidate)
 
@@ -287,9 +293,12 @@ async def upload_file(
             {"name": "references.bib", "content": bib_content, "type": "bib"},
         ]
 
-        # Add embedded images from the source document as project files
+        # Add embedded images from the source document as project files (via GCS)
         img_ext_map = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/bmp": "bmp"}
         embedded_image_names: set = set()
+        # We need a temporary project ID for GCS paths — use a placeholder; real ID assigned after create
+        # Instead, collect image bytes and store after project creation
+        pending_images: list = []
         for idx, img_data in enumerate(extracted_images):
             if not img_data.startswith("data:"):
                 continue
@@ -297,7 +306,9 @@ async def upload_file(
             ext = img_ext_map.get(mime, "png")
             img_name = f"figure{idx + 1}.{ext}"
             b64_data = img_data.split(",", 1)[1] if "," in img_data else img_data
-            project_files.append({"name": img_name, "content": b64_data, "type": ext})
+            import base64 as _base64
+            pending_images.append({"name": img_name, "mime": mime, "ext": ext,
+                                    "data": _base64.b64decode(b64_data)})
             embedded_image_names.add(img_name)
 
         # Add custom class file if provided
@@ -313,6 +324,21 @@ async def upload_file(
             custom_theme=custom_theme,
         )
 
+        project_id = project["id"]
+
+        # Upload embedded images to GCS and add as project files
+        if pending_images:
+            from api.services.storage import upload_image as gcs_upload
+            updated_files = list(project_files)
+            for img in pending_images:
+                try:
+                    gcs_ref = gcs_upload(img["data"], project_id, img["name"], img["mime"])
+                    updated_files.append({"name": img["name"], "content": gcs_ref, "type": img["ext"]})
+                except Exception as img_err:
+                    logger.warning(f"Failed to upload embedded image {img['name']}: {img_err}")
+            if len(updated_files) > len(project_files):
+                await db_service.update_project(project_id, user["uid"], updated_files)
+
         # Detect image filenames referenced in LaTeX that are not in the project
         image_refs = gemini_service._extract_image_references(latex_content)
         missing_images = [
@@ -321,7 +347,7 @@ async def upload_file(
         ]
 
         return {
-            "project_id": project["id"],
+            "project_id": project_id,
             "tokens_used": tokens,
             "missing_images": missing_images,
         }
