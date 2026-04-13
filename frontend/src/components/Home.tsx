@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect } from 'react';
 import { useSettingsStore } from '../store/settingsStore';
 import { useNavigate } from 'react-router-dom';
+import { MissingImagesDialog } from './editor/MissingImagesDialog';
 import {
   Box,
   Typography,
@@ -55,6 +56,7 @@ export function Home() {
   const [error, setError] = useState('');
   const [dragActive, setDragActive] = useState(false);
 
+  const [missingImagesDialog, setMissingImagesDialog] = useState<{ projectId: string; images: string[] } | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -146,7 +148,13 @@ export function Home() {
       const result = await api.uploadFile(file, 'report', undefined, clsContent, generationMaxTokens);
       setUploadProgress(100);
       clearInterval(progressInterval);
-      navigate(`/editor/${result.project_id}`);
+
+      if (result.missing_images && result.missing_images.length > 0) {
+        setMissingImagesDialog({ projectId: result.project_id, images: result.missing_images });
+        setUploading(false);
+      } else {
+        navigate(`/editor/${result.project_id}`);
+      }
     } catch (err: any) {
       setError(err.message || 'Upload failed');
       clearInterval(progressInterval);
@@ -495,6 +503,19 @@ export function Home() {
           <Delete sx={{ mr: 1.5, fontSize: 14 }} /> Delete
         </MenuItem>
       </Menu>
+
+      {missingImagesDialog && (
+        <MissingImagesDialog
+          open={true}
+          projectId={missingImagesDialog.projectId}
+          missingImages={missingImagesDialog.images}
+          onDone={() => {
+            const id = missingImagesDialog.projectId;
+            setMissingImagesDialog(null);
+            navigate(`/editor/${id}`);
+          }}
+        />
+      )}
     </Box>
   );
 }

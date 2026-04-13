@@ -210,7 +210,7 @@ export const api = {
     request<void>(`/admin/invites/${code}`, { method: 'DELETE' }),
 
   // Upload
-  uploadFile: async (file: File, theme: string, customTheme?: string, clsContent?: string, maxTokens?: number) => {
+  uploadFile: async (file: File, theme: string, customTheme?: string, clsContent?: string, maxTokens?: number): Promise<{ project_id: string; tokens_used: number; missing_images: string[] }> => {
     const token = useAuthStore.getState().token;
     const formData = new FormData();
     formData.append('file', file);
@@ -230,6 +230,25 @@ export const api = {
       throw new Error(error.detail || 'Upload failed');
     }
 
+    const data = await response.json();
+    return { ...data, missing_images: data.missing_images || [] };
+  },
+
+  addProjectImages: async (projectId: string, images: File[]): Promise<{ added: string[] }> => {
+    const token = useAuthStore.getState().token;
+    const formData = new FormData();
+    for (const img of images) {
+      formData.append('images', img);
+    }
+    const response = await fetch(`${API_BASE}/projects/${projectId}/add-images`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData,
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: 'Upload failed' }));
+      throw new Error(error.detail || 'Image upload failed');
+    }
     return response.json();
   },
 };
