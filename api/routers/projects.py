@@ -91,8 +91,47 @@ async def delete_project(project_id: str, user: dict = Depends(get_current_user)
     success = await db_service.delete_project(project_id, user["uid"])
     if not success:
         raise HTTPException(status_code=404, detail="Project not found")
-    
+
     return {"message": "Project deleted"}
+
+@router.post("/{project_id}/add-images")
+async def add_images_to_project(
+    project_id: str,
+    images: List[UploadFile] = File(...),
+    user: dict = Depends(get_current_user)
+):
+    """Add one or more image files to an existing project."""
+    project = await db_service.get_project(project_id, user["uid"])
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    ext_type_map = {"png": "png", "jpg": "jpg", "jpeg": "jpg", "gif": "png", "bmp": "png", "pdf": "pdf"}
+    existing_files = project.get("files", [])
+    existing_names = {f["name"] for f in existing_files}
+
+    new_files = list(existing_files)
+    added = []
+    for upload in images:
+        raw = await upload.read()
+        if not raw:
+            continue
+        ext = (upload.filename or "image.png").rsplit(".", 1)[-1].lower()
+        file_type = ext_type_map.get(ext, "png")
+        name = upload.filename or f"image.{ext}"
+        # Deduplicate name
+        base, dot_ext = (name.rsplit(".", 1) + [""])[:2]
+        candidate = name
+        counter = 1
+        while candidate in existing_names:
+            candidate = f"{base}_{counter}.{dot_ext or ext}"
+            counter += 1
+        b64 = base64.b64encode(raw).decode("utf-8")
+        new_files.append({"name": candidate, "content": b64, "type": file_type})
+        existing_names.add(candidate)
+        added.append(candidate)
+
+    await db_service.update_project(project_id, user["uid"], new_files)
+    return {"added": added, "project_id": project_id}
 
 def _format_project(project: dict) -> ProjectResponse:
     files = project.get("files", [])
@@ -248,6 +287,19 @@ async def upload_file(
             {"name": "references.bib", "content": bib_content, "type": "bib"},
         ]
 
+        # Add embedded images from the source document as project files
+        img_ext_map = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/bmp": "bmp"}
+        embedded_image_names: set = set()
+        for idx, img_data in enumerate(extracted_images):
+            if not img_data.startswith("data:"):
+                continue
+            mime = img_data.split(";")[0][5:]
+            ext = img_ext_map.get(mime, "png")
+            img_name = f"figure{idx + 1}.{ext}"
+            b64_data = img_data.split(",", 1)[1] if "," in img_data else img_data
+            project_files.append({"name": img_name, "content": b64_data, "type": ext})
+            embedded_image_names.add(img_name)
+
         # Add custom class file if provided
         if custom_cls and custom_cls.strip():
             project_files.append({"name": "custom.cls", "content": custom_cls, "type": "cls"})
@@ -261,7 +313,18 @@ async def upload_file(
             custom_theme=custom_theme,
         )
 
-        return {"project_id": project["id"], "tokens_used": tokens}
+        # Detect image filenames referenced in LaTeX that are not in the project
+        image_refs = gemini_service._extract_image_references(latex_content)
+        missing_images = [
+            ref for ref in image_refs
+            if ref not in embedded_image_names
+        ]
+
+        return {
+            "project_id": project["id"],
+            "tokens_used": tokens,
+            "missing_images": missing_images,
+        }
 
     finally:
         try:

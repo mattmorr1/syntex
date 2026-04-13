@@ -826,28 +826,52 @@ Return ONLY the completion text, nothing else. No explanations."""
 
         return self._fix_latex_artifacts(accumulated), total_tokens
 
+    # Maps (package_name → [regex patterns that require it]).
+    # If any pattern is found in the document body and the package isn't loaded, inject it.
+    _PACKAGE_TRIGGERS: List[Tuple[str, List[str]]] = [
+        ("booktabs",    [r"\\toprule", r"\\midrule", r"\\bottomrule", r"\\cmidrule"]),
+        ("graphicx",    [r"\\includegraphics"]),
+        ("amsmath",     [r"\\begin\{align", r"\\begin\{equation\*\}", r"\\begin\{gather",
+                         r"\\begin\{multline", r"\\DeclareMathOperator", r"\\text\{"]),
+        ("amssymb",     [r"\\mathbb\{", r"\\mathfrak\{"]),
+        ("tabularx",    [r"\\begin\{tabularx\}"]),
+        ("multirow",    [r"\\multirow\{"]),
+        ("xcolor",      [r"\\textcolor\{", r"\\colorbox\{", r"\\definecolor\{"]),
+        ("subcaption",  [r"\\begin\{subfigure\}"]),
+        ("caption",     [r"\\captionof\{"]),
+        ("float",       [r"\\begin\{figure\}\[H\]", r"\\begin\{table\}\[H\]"]),
+        ("algorithm",   [r"\\begin\{algorithm\}"]),
+        ("algpseudocode", [r"\\begin\{algorithmic\}"]),
+        ("listings",    [r"\\begin\{lstlisting\}", r"\\lstset\{"]),
+        ("enumitem",    [r"\\begin\{enumerate\}\s*\["]),
+        ("url",         [r"\\url\{"]),
+        ("hyperref",    [r"\\href\{"]),
+        ("cleveref",    [r"\\cref\{", r"\\Cref\{"]),
+        ("siunitx",     [r"\\SI\{", r"\\si\{"]),
+        ("bm",          [r"\\bm\{"]),
+    ]
+
     @staticmethod
     def _fix_latex_artifacts(text: str) -> str:
         """
         Fix common model-generated LaTeX artifacts before saving.
 
-        1. \\t<whitespace>: model meant the letter 't', but \\t is LaTeX's
-           tie-after accent — causes silent character loss on render.
-        2. Bare tabulars not wrapped in \\resizebox — causes horizontal overflow.
-        3. Ensure \\usepackage{geometry} and microtype present in preamble.
+        1. \\t<whitespace>  → t<space>  (LaTeX \\t is tie-after accent, not letter t)
+        2. Bare tabulars   → wrapped in \\resizebox{\\textwidth}{!}{...}
+        3. Auto-inject missing \\usepackage{} declarations needed by used commands
+        4. Ensure geometry + microtype are present
+        5. Remove duplicate \\begin{document} (chunked generation artefact)
+        6. Truncate content after \\end{document}
         """
         # 1. \t<space> → t<space>
         text = re.sub(r'\\t(\s)', r't\1', text)
 
         # 2. Wrap any \begin{tabular} not already inside \resizebox
-        #    Pattern: \begin{tabular} that is NOT preceded by \resizebox{...}{!}{
         def wrap_tabular(m: re.Match) -> str:
             before = text[:m.start()]
-            # Check if already inside a \resizebox within the last 100 chars
             if r'\resizebox' in before[-100:]:
                 return m.group(0)
-            tabular_block = m.group(0)
-            return r'\resizebox{\textwidth}{!}{' + tabular_block + r'}'
+            return r'\resizebox{\textwidth}{!}{' + m.group(0) + r'}'
 
         text = re.sub(
             r'\\begin\{tabular\}.*?\\end\{tabular\}',
@@ -856,16 +880,68 @@ Return ONLY the completion text, nothing else. No explanations."""
             flags=re.DOTALL,
         )
 
-        # 3. Inject geometry + microtype if missing, right after \documentclass line
-        if r'\usepackage{geometry}' not in text and r'\documentclass' in text:
+        # 3 + 4. Build a set of packages already loaded, then inject missing ones
+        existing_pkgs = set(re.findall(r'\\usepackage(?:\[.*?\])?\{([^}]+)\}', text))
+        # Flatten comma-separated packages: \usepackage{a,b,c}
+        flat_pkgs: set = set()
+        for pkg_str in existing_pkgs:
+            for p in pkg_str.split(','):
+                flat_pkgs.add(p.strip())
+
+        # Also keep hyperref last (it redefines many things) — collect to append
+        deferred_pkgs: list = []
+        inject_lines: list = []
+
+        for pkg, patterns in GeminiService._PACKAGE_TRIGGERS:
+            if pkg in flat_pkgs:
+                continue
+            if any(re.search(pat, text) for pat in patterns):
+                if pkg in ("hyperref",):
+                    deferred_pkgs.append(pkg)
+                else:
+                    inject_lines.append(f"\\usepackage{{{pkg}}}")
+
+        # geometry + microtype always present (overflow / typography)
+        if 'geometry' not in flat_pkgs:
+            inject_lines.insert(0, r'\usepackage[margin=1in]{geometry}')
+        if 'microtype' not in flat_pkgs:
+            inject_lines.insert(1, r'\usepackage{microtype}')
+
+        all_inject = inject_lines + [f"\\usepackage{{{p}}}" for p in deferred_pkgs]
+        if all_inject and r'\documentclass' in text:
+            inject_block = "\n".join(all_inject)
             text = re.sub(
                 r'(\\documentclass(?:\[.*?\])?\{.*?\})',
-                r'\1\n\\usepackage[margin=1in]{geometry}\n\\usepackage{microtype}',
+                lambda m: m.group(0) + "\n" + inject_block,
                 text,
                 count=1,
             )
 
+        # 5. Remove duplicate \begin{document} — keep only the first occurrence
+        doc_starts = [m.start() for m in re.finditer(r'\\begin\{document\}', text)]
+        if len(doc_starts) > 1:
+            # Remove all but the first \begin{document}
+            for pos in reversed(doc_starts[1:]):
+                text = text[:pos] + text[pos + len(r'\begin{document}'):]
+
+        # 6. Truncate anything after \end{document}
+        end_pos = text.rfind(r'\end{document}')
+        if end_pos != -1:
+            text = text[:end_pos + len(r'\end{document}')] + '\n'
+
         return text
+
+    @staticmethod
+    def _extract_image_references(latex: str) -> List[str]:
+        """Return list of unique filenames referenced via \\includegraphics."""
+        refs = re.findall(r'\\includegraphics(?:\[.*?\])?\{([^}]+)\}', latex)
+        # Normalise: strip leading path components
+        normalised = []
+        for ref in refs:
+            name = ref.strip().rsplit('/', 1)[-1]
+            if name:
+                normalised.append(name)
+        return list(dict.fromkeys(normalised))  # unique, order-preserving
 
     async def _generate_bibliography(
         self, source_text: str, latex: str, api_key: Optional[str]
