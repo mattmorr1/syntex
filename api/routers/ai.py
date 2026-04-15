@@ -2,6 +2,9 @@ from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from typing import Optional
 import json as json_lib
+import logging
+
+logger = logging.getLogger(__name__)
 
 from api.models.schemas import (
     AutocompleteRequest, AutocompleteResponse,
@@ -85,10 +88,9 @@ async def agent_edit(request: AgentEditRequest, user: dict = Depends(get_current
             tokens=tokens
         )
     except Exception as e:
-        error_msg = str(e)
-        # Return a user-friendly error response
+        logger.error(f"agent_edit failed: {e}")
         return AgentEditResponse(
-            explanation=f"Error: {error_msg}",
+            explanation="An error occurred while processing your request.",
             changes=[],
             tokens=0
         )
@@ -117,7 +119,8 @@ async def agent_edit_stream(request: AgentEditRequest, user: dict = Depends(get_
                     result = event["data"]
                     yield f"data: {json_lib.dumps({'type': 'result', 'explanation': result.get('explanation', ''), 'changes': result.get('changes', []), 'tokens': total_tokens})}\n\n"
         except Exception as e:
-            yield f"data: {json_lib.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            logger.error(f"agent_edit_stream failed: {e}")
+            yield f"data: {json_lib.dumps({'type': 'error', 'message': 'An error occurred while processing your request.'})}\n\n"
         finally:
             # Update token pool — fire-and-forget; don't fail the stream if this errors
             if total_tokens > 0:

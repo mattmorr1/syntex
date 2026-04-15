@@ -2,6 +2,7 @@ import os
 import tempfile
 import subprocess
 import shutil
+from pathlib import Path
 from typing import Tuple, Optional, List, Dict
 from config import Config
 
@@ -11,14 +12,23 @@ class LaTeXService:
         self.timeout = Config.LATEX_TIMEOUT
         self.compilers = ["pdflatex", "xelatex", "lualatex"]
     
+    @staticmethod
+    def _safe_path(base_dir: str, name: str) -> str:
+        """Resolve path ensuring it stays within base_dir (prevents path traversal)."""
+        base = Path(base_dir).resolve()
+        target = (base / name).resolve()
+        if not str(target).startswith(str(base) + os.sep) and target != base:
+            raise ValueError("Invalid file path: path traversal detected")
+        return str(target)
+
     async def compile(self, files: List[Dict], main_file: str) -> Tuple[bool, Optional[bytes], Optional[str]]:
         temp_dir = tempfile.mkdtemp()
-        
+
         try:
 
             for f in files:
-                file_path = os.path.join(temp_dir, f["name"])
-                
+                file_path = self._safe_path(temp_dir, f["name"])
+
                 # Create subdirectories if needed
                 os.makedirs(os.path.dirname(file_path), exist_ok=True) if os.path.dirname(file_path) else None
                 
@@ -42,13 +52,13 @@ class LaTeXService:
                     with open(file_path, "w", encoding="utf-8") as fp:
                         fp.write(text)
             
-            main_path = os.path.join(temp_dir, main_file)
+            main_path = self._safe_path(temp_dir, main_file)
             if not os.path.exists(main_path):
                 return False, None, f"Main file not found: {main_file}"
-            
+
             # Determine compiler based on document
             compiler = self._detect_compiler(files, main_file)
-            aux_file = os.path.join(temp_dir, main_file.replace(".tex", ".aux"))
+            aux_file = self._safe_path(temp_dir, main_file.replace(".tex", ".aux"))
 
             # First pass
             result = subprocess.run(
@@ -84,15 +94,15 @@ class LaTeXService:
                 )
             
             # Check for PDF output
-            pdf_path = os.path.join(temp_dir, main_file.replace(".tex", ".pdf"))
-            
+            pdf_path = self._safe_path(temp_dir, main_file.replace(".tex", ".pdf"))
+
             if os.path.exists(pdf_path):
                 with open(pdf_path, "rb") as f:
                     pdf_content = f.read()
                 return True, pdf_content, None
             else:
                 # Extract error from log
-                log_path = os.path.join(temp_dir, main_file.replace(".tex", ".log"))
+                log_path = self._safe_path(temp_dir, main_file.replace(".tex", ".log"))
                 error_msg = self._extract_error(log_path) if os.path.exists(log_path) else result.stderr
                 return False, None, error_msg or "PDF generation failed"
                 
