@@ -136,7 +136,7 @@ async def add_images_to_project(
             gcs_ref = gcs_upload(raw, project_id, candidate, mime)
         except Exception as gcs_err:
             logger.error(f"GCS upload failed for {candidate}: {gcs_err}")
-            raise HTTPException(status_code=502, detail=f"Image storage failed: {str(gcs_err)[:200]}")
+            raise HTTPException(status_code=502, detail="Image storage failed")
         new_files.append({"name": candidate, "content": gcs_ref, "type": file_type})
         existing_names.add(candidate)
         added.append(candidate)
@@ -191,9 +191,12 @@ async def upload_file(
         except Exception:
             pass
 
-    # Save file temporarily
+    # Save file temporarily (basename strips any directory components from the filename)
     temp_dir = tempfile.mkdtemp()
-    file_path = os.path.join(temp_dir, file.filename)
+    safe_filename = os.path.basename(file.filename or "upload")
+    if not safe_filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    file_path = os.path.join(temp_dir, safe_filename)
 
     try:
         content = await file.read()
@@ -275,10 +278,7 @@ async def upload_file(
             )
         except Exception as gen_err:
             logger.error(f"Gemini generation failed ({type(gen_err).__name__}): {gen_err}")
-            raise HTTPException(
-                status_code=502,
-                detail=f"AI generation failed ({type(gen_err).__name__}): {str(gen_err)[:300]}"
-            )
+            raise HTTPException(status_code=502, detail="AI generation failed")
 
         # Update user tokens
         await db_service.update_user_tokens(user["uid"], pro_tokens=tokens)
