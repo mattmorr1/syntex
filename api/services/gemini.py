@@ -382,7 +382,11 @@ File: {file_name}
 Provide a SINGLE short completion (1-2 lines max) that would logically follow.
 Return ONLY the completion text, nothing else. No explanations."""
 
-        text, tokens = await self._call_api(FLASH_MODEL, prompt, temperature=0.1, max_tokens=100)
+        try:
+            text, tokens = await self._call_api(FLASH_MODEL, prompt, temperature=0.1, max_tokens=100)
+        except TokenLimitError as e:
+            # Partial text is still a usable completion suggestion
+            return e.partial_text.strip(), e.tokens
         return text.strip(), tokens
     
     async def _extract_content_inventory(
@@ -407,9 +411,13 @@ Return ONLY the completion text, nothing else. No explanations."""
             f"{content[:25000]}\n\n"
             "OUTPUT: structured inventory only."
         )
-        text, _ = await self._call_api(
-            FLASH_MODEL, prompt, temperature=0.0, max_tokens=8192, api_key=api_key
-        )
+        try:
+            text, _ = await self._call_api(
+                FLASH_MODEL, prompt, temperature=0.0, max_tokens=8192, api_key=api_key
+            )
+        except TokenLimitError as e:
+            # Partial inventory is still useful — return what we got
+            text = e.partial_text
         return text
 
     @staticmethod
@@ -470,10 +478,12 @@ Return ONLY the completion text, nothing else. No explanations."""
             f"You are a LaTeX document architect. Analyse the academic paper below "
             f"and produce a JSON document skeleton using {theme_desc} style.\n\n"
             "RULES:\n"
-            "- preamble: full \\documentclass + \\usepackage block (include "
+            "- preamble: \\documentclass + \\usepackage block (include "
             "\\usepackage[backend=bibtex,style=authoryear]{biblatex} and "
             "\\addbibresource{references.bib}) + \\title + "
-            "\\author + \\date + \\begin{document} + \\maketitle + \\begin{abstract}...\\end{abstract}\n"
+            "\\author + \\date + \\begin{document} + \\maketitle + "
+            "\\begin{abstract}ABSTRACT_PLACEHOLDER\\end{abstract}\n"
+            "  (use the literal text ABSTRACT_PLACEHOLDER — do NOT write the abstract content here)\n"
             "- sections: array of top-level sections (Introduction, Methods, etc.), "
             "each with a unique placeholder string (SECTION_0, SECTION_1, …) and the "
             "approximate start/end character offsets in the source text\n"
@@ -487,10 +497,14 @@ Return ONLY the completion text, nothing else. No explanations."""
         try:
             text, _ = await self._call_api(
                 FLASH_MODEL, prompt, temperature=0.1,
-                max_tokens=4096, api_key=api_key,
+                max_tokens=32768, api_key=api_key,
                 response_schema=self._STRUCTURE_SCHEMA
             )
             return json.loads(text)
+        except TokenLimitError as e:
+            # Truncated JSON is unparseable — structure pass must be complete
+            print(f"_generate_structure hit token limit ({e.tokens} tokens), structure response incomplete")
+            return None
         except Exception as e:
             print(f"_generate_structure failed: {e}")
             return None
@@ -531,10 +545,14 @@ Return ONLY the completion text, nothing else. No explanations."""
             f"SOURCE TEXT FOR THIS SECTION:\n{section_text}\n\n"
             "BEGIN LATEX SECTION OUTPUT NOW:\n"
         )
-        text, tokens = await self._call_api(
-            PRO_MODEL, prompt, temperature=0.15,
-            max_tokens=max_tokens, api_key=api_key
-        )
+        try:
+            text, tokens = await self._call_api(
+                PRO_MODEL, prompt, temperature=0.15,
+                max_tokens=max_tokens, api_key=api_key
+            )
+        except TokenLimitError as e:
+            # Partial section content is better than a missing section
+            return self._strip_code_fences(e.partial_text), e.tokens
         return self._strip_code_fences(text), tokens
 
     async def _fix_labels(self, latex: str, api_key: Optional[str]) -> str:
@@ -556,13 +574,39 @@ Return ONLY the completion text, nothing else. No explanations."""
                 FLASH_MODEL, prompt, temperature=0.0,
                 max_tokens=65536, api_key=api_key
             )
-            fixed = self._strip_code_fences(text)
-            # Sanity check: result should still contain \end{document}
-            if r"\end{document}" in fixed:
-                return fixed
+        except TokenLimitError as e:
+            # Use partial output if it's still a complete document
+            fixed = self._strip_code_fences(e.partial_text)
+            return fixed if r"\end{document}" in fixed else latex
         except Exception as e:
             print(f"_fix_labels failed: {e}")
+            return latex
+        fixed = self._strip_code_fences(text)
+        # Sanity check: result should still contain \end{document}
+        if r"\end{document}" in fixed:
+            return fixed
         return latex
+
+    @staticmethod
+    def _extract_abstract(content: str) -> str:
+        """
+        Extract the abstract text from source content.
+        Returns the raw text to embed in \begin{abstract}...\end{abstract}.
+        Falls back to the first 800 chars of content if no abstract section is found.
+        """
+        # Common abstract header patterns
+        m = re.search(
+            r'(?:^|\n)\s*[Aa]bstract[:\s]*\n([\s\S]{50,3000?}?)(?=\n\s*(?:[IVXivx]+[.\s]|[A-Z][a-z]+\s*\n|\d+\s*[.)]?\s*[A-Z]|Keywords?|Introduction))',
+            content
+        )
+        if m:
+            return m.group(1).strip()
+        # Fallback: first paragraph of meaningful length
+        for para in content.split('\n\n'):
+            para = para.strip()
+            if 100 < len(para) < 2000 and not para.startswith('\\'):
+                return para
+        return content[:800].strip()
 
     async def _generate_document_chunked(
         self,
@@ -587,6 +631,11 @@ Return ONLY the completion text, nothing else. No explanations."""
         sections = structure["sections"]
         postamble = structure["postamble"]
         total_tokens = 0
+
+        # Fill ABSTRACT_PLACEHOLDER with extracted abstract text from source
+        if "ABSTRACT_PLACEHOLDER" in preamble:
+            abstract_text = self._extract_abstract(content)
+            preamble = preamble.replace("ABSTRACT_PLACEHOLDER", abstract_text)
 
         print(f"_generate_document_chunked: {len(sections)} sections detected")
 
@@ -734,6 +783,9 @@ Return ONLY the completion text, nothing else. No explanations."""
         total_tokens = 0
         max_iterations = 8
         used_fallback_prompt = False
+        # Cap per-call tokens so the non-streaming API can respond within its server deadline
+        # (~60s). The iteration loop continues until \end{document} is reached.
+        per_call_max_tokens = min(max_tokens, 16384)
 
         for iteration in range(max_iterations):
             try:
@@ -753,7 +805,7 @@ Return ONLY the completion text, nothing else. No explanations."""
                 text, tokens = await self._call_api(
                     PRO_MODEL, current_prompt,
                     temperature=0.1 if iteration > 0 else 0.15,
-                    max_tokens=max_tokens,
+                    max_tokens=per_call_max_tokens,
                     api_key=api_key,
                     images=current_images
                 )
@@ -802,7 +854,7 @@ Return ONLY the completion text, nothing else. No explanations."""
                         text, tokens = await self._call_api(
                             PRO_MODEL, current_prompt,
                             temperature=0.15,
-                            max_tokens=max_tokens,
+                            max_tokens=per_call_max_tokens,
                             api_key=api_key,
                             images=None,
                         )
@@ -879,10 +931,10 @@ Return ONLY the completion text, nothing else. No explanations."""
         # 1b. Decorative first-letter commands the model generates that have no package:
         #    \lettrine{T}{his} → This, \dropcap{T}his → This, etc.
         for _dc in ['lettrine', 'Lettrine', 'dropcap', 'initial', 'drop', 'yinipar']:
-            # two-arg form: \cmd{T}{his} → This
-            text = re.sub(rf'\\{_dc}\{{([A-Za-z])\}}\{{([^}}]*)\}}', r'\1\2', text)
-            # one-arg form: \cmd{T}his → This
-            text = re.sub(rf'\\{_dc}\{{([A-Za-z])\}}', r'\1', text)
+            # two-arg form: \cmd[opts]{T}{his} → This  (optional [...] before first brace)
+            text = re.sub(rf'\\{_dc}(?:\[.*?\])?\{{([A-Za-z])\}}\{{([^}}]*)\}}', r'\1\2', text)
+            # one-arg form: \cmd[opts]{T}his → This
+            text = re.sub(rf'\\{_dc}(?:\[.*?\])?\{{([A-Za-z])\}}', r'\1', text)
 
         # 2. Wrap any \begin{tabular} not already inside \resizebox
         def wrap_tabular(m: re.Match) -> str:
@@ -1025,11 +1077,15 @@ Return ONLY the completion text, nothing else. No explanations."""
                 FLASH_MODEL, prompt, temperature=0.1,
                 max_tokens=8192, api_key=api_key
             )
-            bib = self._strip_code_fences(text).strip()
-            if re.search(r'@\w+\{', bib):
-                return bib
+        except TokenLimitError as e:
+            # Use whatever BibTeX was generated before the limit was hit
+            text = e.partial_text
         except Exception as e:
             print(f"_generate_bibliography failed: {e}")
+            return ""
+        bib = self._strip_code_fences(text).strip()
+        if re.search(r'@\w+\{', bib):
+            return bib
         return ""
 
     def _deduplicate_continuation(self, accumulated: str, new_chunk: str) -> str:

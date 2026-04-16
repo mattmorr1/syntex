@@ -139,10 +139,10 @@ class LaTeXService:
         # --- Decorative first-letter commands (no package available at compile) ---
         # \lettrine{T}{his} → This,  \dropcap{T}his → This,  etc.
         for _dc in ['lettrine', 'Lettrine', 'dropcap', 'initial', 'drop', 'yinipar']:
-            # two-arg form: \cmd{T}{his} → This
-            text = re.sub(rf'\\{_dc}\{{([A-Za-z])\}}\{{([^}}]*)\}}', r'\1\2', text)
-            # one-arg form: \cmd{T}his → This
-            text = re.sub(rf'\\{_dc}\{{([A-Za-z])\}}', r'\1', text)
+            # two-arg form: \cmd[opts]{T}{his} → This  (optional [...] before first brace)
+            text = re.sub(rf'\\{_dc}(?:\[.*?\])?\{{([A-Za-z])\}}\{{([^}}]*)\}}', r'\1\2', text)
+            # one-arg form: \cmd[opts]{T}his → This
+            text = re.sub(rf'\\{_dc}(?:\[.*?\])?\{{([A-Za-z])\}}', r'\1', text)
 
         return text
 
