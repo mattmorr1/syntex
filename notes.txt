@@ -1,24 +1,19 @@
-to do:
+**to do:**
 - abstracting layer for ai agent (langchain?)
-- api interchanging?
-- how does admin have control over backend? -> no home button back, have to use url
+    - api interchanging?
+- customization with invites
+- promote people to admin?
 - more efficient way to create accounts?
-- organizations?
-- add your own prompt/template (cls, other) for ai upload
-- make the generation process faster/seem more seamless
-- pdf uploads
-- upload failed?
 - token cap
     - monetization
     - cost model
-- customization with invites
-- promote people to admin?
-- optimize output for UEA
-- batching/agentic until full output generated (rn token cap) -> batching should be more around if it caps out length
 - write readme, create notion site for explain use case
-- renderer viewer doesnt clear after leaving specific file
-
--> connect to api key?
+- click in pdf viewer references editor too.
+- optimize structued output
+- folder organizations
+- sharing/cowork
 - Order of documents?
+- random fragmentation in generation with batches
+- tab accept autocomplete
 
 deploy: gcloud builds submit --config=config/cloudbuild.yaml
