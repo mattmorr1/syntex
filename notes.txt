@@ -22,10 +22,26 @@ collab hub deploys separately: needs min-instances=1 + session affinity
 - tab accept autocomplete                                -> Monaco inline completions
 
 
+**done in gcloud (project uea-app-470816):**
+- jwt-secret + admin-password created in Secret Manager; compute SA granted
+  secretmanager.secretAccessor on both (scoped to the secrets, not project-wide)
+- JWT_SECRET attached to the live uea-app service -> revision 00089.
+  Production had been signing tokens with the public default from config.py.
+  Verified closed: a token forged with that default now gets 401 from /auth/me.
+  admin-password holds the same value the service already used, so admin sign-in
+  is unchanged.
+- lifecycle rule on the storage bucket: delete under builds/ after 1 day.
+  Prefix-scoped; projects/ (user figures) is not matched.
+- leaked gemini key from commit 2d22006 tested against the API: HTTP 400, dead.
+  Control test with the current key returned 200, so the method is sound.
+
 **open, needs you:**
-- create the two Secret Manager entries the deploy expects: jwt-secret, admin-password
-- revoke the three credentials in commit 2d22006: gemini key, SMTP app password, admin password
-- set a lifecycle rule on the builds/ bucket prefix (nothing expires those artifacts)
+- revoke the SMTP app password from commit 2d22006 (Google account, not gcloud)
+- the admin password is also in that commit and still in use — change it, then update
+  the admin-password secret
+- deploy this branch: nothing committed today is live yet. The running service is old
+  code plus the JWT_SECRET fix.
 - pick a collaboration transport: managed (needs an account only you can create) vs the
-  self-hosted hub already in collab/
+  self-hosted hub already in collab/ (needs its own service, min-instances=1,
+  session affinity, and the same JWT_SECRET)
 - confirm GEMINI_FLASH_MODEL / GEMINI_PRO_MODEL ids in config.py are current
