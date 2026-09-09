@@ -36,7 +36,9 @@ collab hub deploys separately: needs min-instances=1 + session affinity
   Control test with the current key returned 200, so the method is sound.
 
 **open, needs you:**
-- revoke the SMTP app password from commit 2d22006 (Google account, not gcloud)
+- revoke the SMTP app password from commit 2d22006 (Google account, not gcloud).
+  Email now prefers RESEND_API_KEY; set that + EMAIL_FROM and the app password can be
+  revoked outright rather than replaced.
 - the admin password is also in that commit and still in use — change it, then update
   the admin-password secret
 - deploy this branch: nothing committed today is live yet. The running service is old

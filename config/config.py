@@ -65,6 +65,10 @@ class Config:
     SMTP_USER = os.getenv("SMTP_USER", "")
     SMTP_PASS = os.getenv("SMTP_PASS", "")
     SMTP_FROM = os.getenv("SMTP_FROM", "")
+    # Preferred transport: an API key scoped to sending, revocable without touching a
+    # mailbox account. Falls back to SMTP when unset.
+    RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
+    EMAIL_FROM = os.getenv("EMAIL_FROM", "") or SMTP_FROM or SMTP_USER
     APP_URL = os.getenv("APP_URL", "http://localhost:5173")
 
     # Database Collections

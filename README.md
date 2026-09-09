@@ -150,7 +150,9 @@ from `config/envexample.yaml`.
 | `FERNET_KEY` | Encrypts user-supplied provider API keys at rest |
 | `LATEX_COMPILER` / `LATEX_TIMEOUT` / `LATEX_CONCURRENCY` | Compilation; concurrency should match the deployed vCPU count |
 | `INVITE_ONLY`, `ADMIN_EMAIL`, `ADMIN_USERNAME` | Registration and the bootstrap admin |
-| `SMTP_*`, `APP_URL` | Invite and access-request email |
+| `RESEND_API_KEY` | Email via HTTP API — preferred; falls back to SMTP when unset |
+| `EMAIL_FROM` | Sender address for both transports |
+| `SMTP_*`, `APP_URL` | SMTP fallback and link base for access-request email |
 | `DEFAULT_TOKEN_CAP` | Per-user monthly token allowance |
 | `COLLAB_TOKEN_HOURS` | Collaboration admission lifetime (default 8) |
 | `COLLAB_ALLOWED_ORIGINS` | Hub origin allowlist, comma-separated |
@@ -186,6 +188,10 @@ rule on that prefix (a day is generous) or the bucket grows without bound.
 - Compilation runs `pdflatex`, conditionally `bibtex`, then further passes so citations
   resolve. It is offloaded to a worker thread and gated by a semaphore — `pdflatex` is
   CPU-bound, so more concurrent runs than cores thrashes rather than parallelises.
+- Email prefers an HTTP API over SMTP. Not because SMTP is insecure — both are
+  TLS-encrypted — but because an API key is scoped to sending and revocable on its own,
+  where a mailbox app password carries the whole account. Deliverability from a verified
+  sending domain is the other reason.
 - Saves carry the `updated_at` the client last read. A write whose baseline has moved is
   rejected with `409` rather than silently overwriting another editor. When live
   collaboration is on, the CRDT guarantees convergence and the baseline is omitted.
