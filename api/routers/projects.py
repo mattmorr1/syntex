@@ -22,6 +22,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
 
+# Collaboration tokens outlive a working session but not a day; a revoked collaborator
+# loses access at expiry rather than immediately, which is the tradeoff for a hub that
+# holds no database connection.
+COLLAB_TOKEN_HOURS = int(os.getenv("COLLAB_TOKEN_HOURS", "8"))
+
 @router.get("", response_model=List[ProjectSummary])
 async def list_projects(user: dict = Depends(get_current_user)):
     projects = await db_service.get_user_projects(user["uid"])
@@ -88,6 +93,37 @@ async def rename_project(project_id: str, request: dict, user: dict = Depends(ge
         raise HTTPException(status_code=404, detail="Project not found")
     
     return {"message": "Project renamed", "name": name.strip()}
+
+@router.get("/{project_id}/collab-token")
+async def collab_token(project_id: str, user: dict = Depends(get_current_user)):
+    """
+    Short-lived token admitting this user to this project's collaboration room.
+
+    The hub cannot reach Firestore, so access is decided here — where ownership is
+    already known — and asserted to the hub as a signed claim. The room is named in
+    the token so a token for one project cannot open another.
+    """
+    import jwt
+    from datetime import datetime, timedelta
+    from config import Config
+
+    project = await db_service.get_project(project_id, user["uid"])
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    now = datetime.utcnow()
+    token = jwt.encode(
+        {
+            "sub": user["uid"],
+            "room": f"project:{project_id}",
+            "name": user.get("username") or user.get("email") or "Anonymous",
+            "iat": now,
+            "exp": now + timedelta(hours=COLLAB_TOKEN_HOURS),
+        },
+        Config.JWT_SECRET,
+        algorithm=Config.ALGORITHM,
+    )
+    return {"token": token, "room": f"project:{project_id}"}
 
 @router.patch("/{project_id}/placement")
 async def set_placement(project_id: str, body: ProjectPlacement,

@@ -10,15 +10,48 @@
  * Durable storage stays in Firestore via the app's normal save path — this process only
  * relays and holds the in-memory document while at least one client is connected.
  *
- * ponytail: no auth on the socket yet. Room names are project ids, so anyone who learns
- * one can join. Gate it with a signed token before this is exposed to real users.
+ * Access is decided by the API, which knows project ownership, and asserted here as a
+ * JWT signed with the shared JWT_SECRET. The token names the room it admits, so a token
+ * for one project cannot open another. This process needs no database connection.
  */
 const http = require('http');
+const jwt = require('jsonwebtoken');
 const { WebSocketServer } = require('ws');
 const { setupWSConnection } = require('y-websocket/bin/utils');
 
 const PORT = process.env.PORT || 1234;
 const ALLOWED = (process.env.COLLAB_ALLOWED_ORIGINS || '').split(',').filter(Boolean);
+const JWT_SECRET = process.env.JWT_SECRET;
+
+if (!JWT_SECRET) {
+  console.error('JWT_SECRET is not set. Refusing to start: an unauthenticated hub lets '
+    + 'anyone who learns a project id read and edit that document.');
+  process.exit(1);
+}
+
+/**
+ * The room is the path y-websocket puts after the host, e.g. /project:abc123.
+ * Returns the verified room name, or null if the request should be refused.
+ */
+function authorize(req) {
+  let url;
+  try {
+    url = new URL(req.url, 'http://localhost');
+  } catch {
+    return null;
+  }
+  const room = decodeURIComponent(url.pathname.replace(/^\//, ''));
+  const token = url.searchParams.get('token');
+  if (!room || !token) return null;
+
+  try {
+    const claims = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
+    // A valid token for a different document must not open this one.
+    return claims.room === room ? room : null;
+  } catch {
+    return null;
+  }
+}
 
 const server = http.createServer((req, res) => {
   if (req.url === '/health') {
@@ -37,6 +70,11 @@ server.on('upgrade', (req, socket, head) => {
   const origin = req.headers.origin;
   if (ALLOWED.length && origin && !ALLOWED.includes(origin)) {
     socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+  if (!authorize(req)) {
+    socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
     socket.destroy();
     return;
   }

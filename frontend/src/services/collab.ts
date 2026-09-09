@@ -43,11 +43,19 @@ export function cursorColor(clientId: number): string {
  * Join the collaborative session for a project. One Y.Doc per project; each file is a
  * Y.Text inside it, so switching tabs does not tear down the connection.
  */
-export function joinProject(projectId: string, user: { name: string }): CollabSession | null {
+export function joinProject(
+  projectId: string,
+  user: { name: string },
+  token: string,
+): CollabSession | null {
   if (!collabEnabled) return null;
 
   const doc = new Y.Doc();
-  const provider = new WebsocketProvider(COLLAB_URL, `project:${projectId}`, doc);
+  // y-websocket appends params to the upgrade URL; the hub refuses the upgrade
+  // outright when the token is missing, invalid, or issued for another room.
+  const provider = new WebsocketProvider(COLLAB_URL, `project:${projectId}`, doc, {
+    params: { token },
+  });
 
   provider.awareness.setLocalStateField('user', {
     name: user.name,

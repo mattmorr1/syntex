@@ -14,7 +14,8 @@ collab hub deploys separately: needs min-instances=1 + session affinity
 - optimize structured output                             -> pooled client, header auth,
                                                             retries, propertyOrdering
 - folder organizations                                   -> folder + sort_order, drag to reorder
-- sharing/cowork                                         -> Yjs + collab/ hub (transport TBD)
+- sharing/cowork                                         -> Yjs + collab/ hub, JWT-gated
+                                                            (transport still TBD)
 - Order of documents?                                    -> read as Home ordering; say if
                                                             you meant \input compile order
 - random fragmentation in generation with batches        -> anchors, not char offsets
@@ -27,5 +28,4 @@ collab hub deploys separately: needs min-instances=1 + session affinity
 - set a lifecycle rule on the builds/ bucket prefix (nothing expires those artifacts)
 - pick a collaboration transport: managed (needs an account only you can create) vs the
   self-hosted hub already in collab/
-- collab socket has no auth yet — room names are project ids
 - confirm GEMINI_FLASH_MODEL / GEMINI_PRO_MODEL ids in config.py are current

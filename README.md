@@ -128,6 +128,11 @@ connections and in-memory document state, which the API's configuration is wrong
 affinity put two collaborators on different machines. Deploy `collab/` as its own service
 with `min-instances=1` and session affinity enabled.
 
+The hub needs the **same `JWT_SECRET`** as the API and refuses to start without it. Access
+is decided by the API — which knows project ownership — and asserted to the hub as a signed
+token naming the room it admits, so the hub needs no database connection and a token for
+one project cannot open another.
+
 ---
 
 ## Configuration
@@ -147,6 +152,8 @@ from `config/envexample.yaml`.
 | `INVITE_ONLY`, `ADMIN_EMAIL`, `ADMIN_USERNAME` | Registration and the bootstrap admin |
 | `SMTP_*`, `APP_URL` | Invite and access-request email |
 | `DEFAULT_TOKEN_CAP` | Per-user monthly token allowance |
+| `COLLAB_TOKEN_HOURS` | Collaboration admission lifetime (default 8) |
+| `COLLAB_ALLOWED_ORIGINS` | Hub origin allowlist, comma-separated |
 
 **Secrets are injected from Secret Manager at deploy time, never from a file:**
 

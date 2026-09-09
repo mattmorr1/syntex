@@ -110,6 +110,11 @@ export const api = {
   deleteProject: (id: string) =>
     request<void>(`/projects/delete-project/${id}`, { method: 'DELETE' }),
 
+  // Admission to a project's collaboration room. The API decides access; the hub only
+  // verifies the signature and that the token names the room being opened.
+  collabToken: (id: string) =>
+    request<{ token: string; room: string }>(`/projects/${id}/collab-token`),
+
   setPlacement: (id: string, placement: { folder?: string; sort_order?: number }) =>
     request<any>(`/projects/${id}/placement`, {
       method: 'PATCH',

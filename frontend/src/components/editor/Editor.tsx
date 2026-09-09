@@ -154,16 +154,35 @@ export function Editor() {
 
   useEffect(() => {
     if (!collabEnabled || !currentProject?.id) return;
-    const session = joinProject(currentProject.id, { name: user?.username || user?.email || 'Anonymous' });
-    if (!session) return;
-    setCollab(session);
-    collabRef.current = session;
-    const sync = () => setCollaborators(peers(session.provider));
-    session.provider.awareness.on('change', sync);
-    sync();
+    const projectId = currentProject.id;
+    let session: CollabSession | null = null;
+    let cancelled = false;
+    let sync: (() => void) | undefined;
+
+    (async () => {
+      let token: string;
+      try {
+        ({ token } = await api.collabToken(projectId));
+      } catch {
+        // No admission to the room: the document still opens, just not shared.
+        return;
+      }
+      if (cancelled) return;
+      session = joinProject(projectId, { name: user?.username || user?.email || 'Anonymous' }, token);
+      if (!session) return;
+      setCollab(session);
+      collabRef.current = session;
+      sync = () => setCollaborators(peers(session!.provider));
+      session.provider.awareness.on('change', sync);
+      sync();
+    })();
+
     return () => {
-      session.provider.awareness.off('change', sync);
-      session.destroy();
+      cancelled = true;
+      if (session) {
+        if (sync) session.provider.awareness.off('change', sync);
+        session.destroy();
+      }
       collabRef.current = null;
       setCollab(null);
       setCollaborators([]);
