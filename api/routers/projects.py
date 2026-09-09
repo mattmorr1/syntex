@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
 from typing import Annotated, List, Optional
+import asyncio
 import tempfile
 import os
 import re
@@ -9,7 +10,8 @@ import base64
 import logging
 
 from api.models.schemas import (
-    ProjectCreate, ProjectUpdate, ProjectResponse, ProjectFile, FeedbackRequest
+    ProjectCreate, ProjectUpdate, ProjectResponse, ProjectSummary, ProjectPlacement,
+    ProjectFile, FeedbackRequest
 )
 from api.services.firestore import db_service
 from api.services.gemini import gemini_service
@@ -20,10 +22,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
 
-@router.get("", response_model=List[ProjectResponse])
+@router.get("", response_model=List[ProjectSummary])
 async def list_projects(user: dict = Depends(get_current_user)):
     projects = await db_service.get_user_projects(user["uid"])
-    return [_format_project(p) for p in projects]
+    return [_format_summary(p) for p in projects]
 
 @router.get("/{project_id}", response_model=ProjectResponse)
 async def get_project(project_id: str, user: dict = Depends(get_current_user)):
@@ -56,15 +58,23 @@ async def create_project(request: ProjectCreate, user: dict = Depends(get_curren
 
 @router.post("/save-project")
 async def save_project(request: ProjectUpdate, user: dict = Depends(get_current_user)):
-    from datetime import datetime, timezone
     files = [f.dict() for f in request.files]
-    success = await db_service.update_project(request.project_id, user["uid"], files)
+    result = await db_service.update_project(
+        request.project_id, user["uid"], files, request.base_updated_at
+    )
 
-    if not success:
+    if not result["ok"]:
+        if result["reason"] == "conflict":
+            # Someone else wrote since this client last read. Hand back their timestamp
+            # so the client can reload rather than silently overwriting their work.
+            raise HTTPException(
+                status_code=409,
+                detail={"message": "Project changed elsewhere", "updated_at": result.get("updated_at")},
+            )
         raise HTTPException(status_code=404, detail="Project not found")
 
-    updated_at = datetime.now(timezone.utc).isoformat()
-    return {"message": "Project saved", "project_id": request.project_id, "updated_at": updated_at}
+    return {"message": "Project saved", "project_id": request.project_id,
+            "updated_at": result["updated_at"]}
 
 @router.patch("/{project_id}/rename")
 async def rename_project(project_id: str, request: dict, user: dict = Depends(get_current_user)):
@@ -78,6 +88,19 @@ async def rename_project(project_id: str, request: dict, user: dict = Depends(ge
         raise HTTPException(status_code=404, detail="Project not found")
     
     return {"message": "Project renamed", "name": name.strip()}
+
+@router.patch("/{project_id}/placement")
+async def set_placement(project_id: str, body: ProjectPlacement,
+                        user: dict = Depends(get_current_user)):
+    """Move a project to a folder and/or set its position in the list."""
+    if body.folder is None and body.sort_order is None:
+        raise HTTPException(status_code=400, detail="Provide folder, sort_order, or both")
+    ok = await db_service.set_project_placement(
+        project_id, user["uid"], body.folder, body.sort_order
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return {"project_id": project_id, "folder": body.folder, "sort_order": body.sort_order}
 
 @router.post("/duplicate-project/{project_id}")
 async def duplicate_project(project_id: str, user: dict = Depends(get_current_user)):
@@ -133,7 +156,7 @@ async def add_images_to_project(
             counter += 1
         # Upload to GCS instead of storing base64 in Firestore
         try:
-            gcs_ref = gcs_upload(raw, project_id, candidate, mime)
+            gcs_ref = await asyncio.to_thread(gcs_upload, raw, project_id, candidate, mime)
         except Exception as gcs_err:
             logger.error(f"GCS upload failed for {candidate}: {gcs_err}")
             raise HTTPException(status_code=502, detail="Image storage failed")
@@ -141,8 +164,23 @@ async def add_images_to_project(
         existing_names.add(candidate)
         added.append(candidate)
 
-    await db_service.update_project(project_id, user["uid"], new_files)
+    result = await db_service.update_project(project_id, user["uid"], new_files)
+    if not result["ok"]:
+        raise HTTPException(status_code=404, detail="Project not found")
     return {"added": added, "project_id": project_id}
+
+def _format_summary(project: dict) -> ProjectSummary:
+    return ProjectSummary(
+        id=project["id"],
+        name=project.get("name", "Untitled"),
+        main_file=project.get("main_file", "main.tex"),
+        theme=project.get("theme", "report"),
+        custom_theme=project.get("custom_theme"),
+        folder=project.get("folder") or "",
+        sort_order=project.get("sort_order") or 0,
+        created_at=project.get("created_at"),
+        updated_at=project.get("updated_at"),
+    )
 
 def _format_project(project: dict) -> ProjectResponse:
     files = project.get("files", [])
@@ -369,12 +407,16 @@ async def upload_file(
             updated_files = list(project_files)
             for img in pending_images:
                 try:
-                    gcs_ref = gcs_upload(img["data"], project_id, img["name"], img["mime"])
+                    gcs_ref = await asyncio.to_thread(
+                        gcs_upload, img["data"], project_id, img["name"], img["mime"]
+                    )
                     updated_files.append({"name": img["name"], "content": gcs_ref, "type": img["ext"]})
                 except Exception as img_err:
                     logger.warning(f"Failed to upload embedded image {img['name']}: {img_err}")
             if len(updated_files) > len(project_files):
-                await db_service.update_project(project_id, user["uid"], updated_files)
+                result = await db_service.update_project(project_id, user["uid"], updated_files)
+                if not result["ok"]:
+                    logger.error(f"Could not attach embedded images to {project_id}: {result['reason']}")
 
         # Detect image filenames referenced in LaTeX that are not in the project
         image_refs = gemini_service._extract_image_references(latex_content)

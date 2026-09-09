@@ -13,9 +13,14 @@ export interface Project {
   mainFile: string;
   theme: string;
   customTheme?: string;
+  folder?: string;      // "" or absent is root; nesting lives in the string
+  sortOrder?: number;
   createdAt: string;
   updatedAt: string;
 }
+
+/** Listing shape: the projects list endpoint returns no file bodies. */
+export type ProjectSummary = Omit<Project, 'files'>;
 
 interface EditorState {
   currentProject: Project | null;

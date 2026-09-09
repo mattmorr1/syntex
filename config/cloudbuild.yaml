@@ -32,7 +32,7 @@ steps:
       - '--min-instances=0'
       - '--max-instances=10'
       - '--env-vars-file=config/env.yaml'
-      - '--set-secrets=/secrets/firebase-key.json=firebase-admin-key:latest'
+      - '--set-secrets=/secrets/firebase-key.json=firebase-admin-key:latest,JWT_SECRET=jwt-secret:latest,ADMIN_PASSWORD=admin-password:latest'
 
 substitutions:
   _VITE_FIREBASE_API_KEY: 'AIzaSyBCf9jPxD3xCJ0vzHRZe2uCA6ThYpEiQCA'

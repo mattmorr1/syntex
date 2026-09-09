@@ -7,6 +7,8 @@ interface SettingsState {
   toggleAiModel: () => void;
   generationMaxTokens: number;
   setGenerationMaxTokens: (tokens: number) => void;
+  preferredProvider: string;
+  setPreferredProvider: (provider: string) => void;
 }
 
 export const useSettingsStore = create<SettingsState>()(
@@ -17,6 +19,8 @@ export const useSettingsStore = create<SettingsState>()(
       toggleAiModel: () => set((state) => ({ aiModel: state.aiModel === 'pro' ? 'flash' : 'pro' })),
       generationMaxTokens: 65536,
       setGenerationMaxTokens: (tokens) => set({ generationMaxTokens: tokens }),
+      preferredProvider: 'gemini',
+      setPreferredProvider: (provider) => set({ preferredProvider: provider }),
     }),
     { name: 'syntex-settings' }
   )

@@ -1,19 +1,31 @@
 **to do:**
-- abstracting layer for ai agent (langchain?)
-    - api interchanging?
-- customization with invites
-- promote people to admin?
-- more efficient way to create accounts?
-- token cap
     - monetization
     - cost model
-- write readme, create notion site for explain use case
-- click in pdf viewer references editor too.
-- optimize structued output
-- folder organizations
-- sharing/cowork
-- Order of documents?
-- random fragmentation in generation with batches
-- tab accept autocomplete
+- check and audit costs for hosting ? can this not be cloudrun and instead some sort of
+  elastic compute?
 
 deploy: gcloud builds submit --config=config/cloudbuild.yaml
+collab hub deploys separately: needs min-instances=1 + session affinity
+
+
+**done (v1.2)** — see the execution plan for detail:
+- write readme, create notion site for explain use case  -> README.md + docs/use-case.md
+- click in pdf viewer references editor too.             -> SyncTeX both directions, Ctrl+J
+- optimize structured output                             -> pooled client, header auth,
+                                                            retries, propertyOrdering
+- folder organizations                                   -> folder + sort_order, drag to reorder
+- sharing/cowork                                         -> Yjs + collab/ hub (transport TBD)
+- Order of documents?                                    -> read as Home ordering; say if
+                                                            you meant \input compile order
+- random fragmentation in generation with batches        -> anchors, not char offsets
+- tab accept autocomplete                                -> Monaco inline completions
+
+
+**open, needs you:**
+- create the two Secret Manager entries the deploy expects: jwt-secret, admin-password
+- revoke the three credentials in commit 2d22006: gemini key, SMTP app password, admin password
+- set a lifecycle rule on the builds/ bucket prefix (nothing expires those artifacts)
+- pick a collaboration transport: managed (needs an account only you can create) vs the
+  self-hosted hub already in collab/
+- collab socket has no auth yet — room names are project ids
+- confirm GEMINI_FLASH_MODEL / GEMINI_PRO_MODEL ids in config.py are current

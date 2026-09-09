@@ -114,3 +114,6 @@ coverage.xml
 .hypothesis/
 config/env.yaml
 config/env.yaml
+
+# Local virtualenv
+.venv/

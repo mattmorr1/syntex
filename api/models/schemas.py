@@ -67,6 +67,8 @@ class ProjectCreate(BaseModel):
 class ProjectUpdate(BaseModel):
     project_id: str
     files: List[ProjectFile]
+    # updated_at the client last saw; omitted means "overwrite unconditionally"
+    base_updated_at: Optional[str] = None
 
 class ProjectResponse(BaseModel):
     id: str
@@ -78,6 +80,22 @@ class ProjectResponse(BaseModel):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
+class ProjectSummary(BaseModel):
+    """Listing DTO: no file bodies. The list view never rendered them."""
+    id: str
+    name: str
+    main_file: str = "main.tex"
+    theme: str = ""
+    custom_theme: Optional[str] = None
+    folder: str = ""          # "" is root; nesting lives in the string, e.g. "thesis/ch2"
+    sort_order: int = 0       # spaced in tens so a move rewrites one document
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+class ProjectPlacement(BaseModel):
+    folder: Optional[str] = Field(default=None, max_length=200)
+    sort_order: Optional[int] = None
+
 class CompileRequest(BaseModel):
     project_id: str
     main_file: str
@@ -87,6 +105,25 @@ class CompileResponse(BaseModel):
     success: bool
     pdf_url: Optional[str] = None
     error: Optional[str] = None
+    synctex: bool = False  # whether click-to-source is available for this build
+
+class SyncTexRequest(BaseModel):
+    page: int = Field(..., ge=1)
+    x: float  # PDF points from the page's left edge
+    y: float  # PDF points from the page's top edge
+
+class SyncTexResponse(BaseModel):
+    file: str
+    line: int
+
+class SyncTexForwardRequest(BaseModel):
+    file: str
+    line: int = Field(..., ge=1)
+
+class SyncTexForwardResponse(BaseModel):
+    page: int
+    x: float
+    y: float
 
 class AutocompleteRequest(BaseModel):
     context: str
@@ -154,3 +191,47 @@ class AdminStats(BaseModel):
 
 class FeedbackRequest(BaseModel):
     feedback: str
+
+
+# Provider / settings schemas
+
+class UpdateProviderKeyRequest(BaseModel):
+    provider: Literal["gemini", "openai", "anthropic", "mistral"]
+    api_key: str
+
+class UpdatePreferredProviderRequest(BaseModel):
+    provider: Literal["gemini", "openai", "anthropic", "mistral"]
+
+class UserSettingsResponse(BaseModel):
+    preferred_provider: str = "gemini"
+    providers_configured: Dict[str, bool] = {}
+
+
+# Token cap schema
+
+class SetTokenCapRequest(BaseModel):
+    cap: int = Field(..., ge=0)
+
+
+# Access request schemas
+
+class AccessRequestCreate(BaseModel):
+    name: str = Field(..., min_length=2, max_length=100)
+    email: EmailStr
+    institution: str = Field(..., max_length=200)
+    use_case: str = Field(..., max_length=1000)
+
+class AccessRequestResponse(BaseModel):
+    id: str
+    name: str
+    email: str
+    institution: str
+    use_case: str
+    status: Literal["pending", "approved", "rejected"]
+    created_at: Optional[datetime] = None
+    reviewed_by: Optional[str] = None
+    reviewed_at: Optional[datetime] = None
+    rejection_reason: Optional[str] = None
+
+class RejectAccessRequestBody(BaseModel):
+    reason: Optional[str] = None

@@ -1,9 +1,36 @@
 import os
+import asyncio
+import functools
+import threading
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
 import firebase_admin
 from firebase_admin import credentials, firestore, auth
 from config import Config
+
+
+def offload(fn):
+    """Run a blocking Firestore method body in a worker thread, off the event loop."""
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        return await asyncio.to_thread(fn, *args, **kwargs)
+    return wrapper
+
+
+def same_instant(a: Optional[str], b: Optional[str]) -> bool:
+    """
+    Compare two ISO timestamps by instant, not by spelling. The API serialises datetimes
+    as '...Z' while serialize_timestamps emits '...+00:00', so string equality here
+    reported a conflict on every save after the first.
+    """
+    if not a or not b:
+        return False
+    try:
+        return (datetime.fromisoformat(a.replace("Z", "+00:00"))
+                == datetime.fromisoformat(b.replace("Z", "+00:00")))
+    except ValueError:
+        return a == b
+
 
 def serialize_timestamps(data: Dict) -> Dict:
     """Convert Firestore Timestamps to ISO strings for JSON serialization"""
@@ -20,6 +47,7 @@ def serialize_timestamps(data: Dict) -> Dict:
 class FirestoreService:
     _instance = None
     _initialized = False
+    _init_lock = threading.Lock()
     
     def __new__(cls):
         if cls._instance is None:
@@ -27,15 +55,24 @@ class FirestoreService:
         return cls._instance
     
     def __init__(self):
+        if getattr(self, "_constructed", False):
+            return  # singleton: never re-blank an initialized client
+        self._constructed = True
         self.db = None
         self.enabled = False
-        self._dev_data = {"users": {}, "projects": {}, "chats": {}, "invites": {}}
+        self._dev_data = {"users": {}, "projects": {}, "chats": {}, "invites": {}, "access_requests": {}}
 
     def _ensure_initialized(self):
-        """Lazy initialization - only runs on first actual use"""
+        """Lazy initialization - only runs on first actual use. Called from worker threads."""
         if FirestoreService._initialized:
             return
-        
+
+        with FirestoreService._init_lock:
+            if FirestoreService._initialized:
+                return
+            self._initialize_locked()
+
+    def _initialize_locked(self):
         try:
             key_path = Config.FIREBASE_KEY_PATH
             print(f"Checking Firebase key at: {key_path}")
@@ -57,7 +94,8 @@ class FirestoreService:
         FirestoreService._initialized = True
     
     # User operations
-    async def create_user(self, uid: str, email: str, username: str, role: str = "user") -> Dict:
+    @offload
+    def create_user(self, uid: str, email: str, username: str, role: str = "user") -> Dict:
         self._ensure_initialized()
         user_data = {
             "uid": uid,
@@ -66,7 +104,10 @@ class FirestoreService:
             "role": role,
             "created_at": datetime.now(timezone.utc),
             "last_accessed": datetime.now(timezone.utc),
-            "tokens_used": {"total": 0, "flash": 0, "pro": 0}
+            "tokens_used": {"total": 0, "flash": 0, "pro": 0},
+            "token_cap": Config.DEFAULT_TOKEN_CAP,
+            "tokens_used_this_month": {"total": 0, "flash": 0, "pro": 0},
+            "token_month_year": datetime.now(timezone.utc).strftime("%Y-%m"),
         }
         
         if self.enabled:
@@ -76,7 +117,8 @@ class FirestoreService:
             
         return user_data
     
-    async def get_user(self, uid: str) -> Optional[Dict]:
+    @offload
+    def get_user(self, uid: str) -> Optional[Dict]:
         self._ensure_initialized()
         if self.enabled:
             doc = self.db.collection("users").document(uid).get()
@@ -87,7 +129,8 @@ class FirestoreService:
             return None
         return self._dev_data["users"].get(uid)
     
-    async def get_user_by_email(self, email: str) -> Optional[Dict]:
+    @offload
+    def get_user_by_email(self, email: str) -> Optional[Dict]:
         self._ensure_initialized()
         if self.enabled:
             users = self.db.collection("users").where("email", "==", email).limit(1).stream()
@@ -101,7 +144,8 @@ class FirestoreService:
                 return user
         return None
     
-    async def update_user_tokens(self, uid: str, flash_tokens: int = 0, pro_tokens: int = 0):
+    @offload
+    def update_user_tokens(self, uid: str, flash_tokens: int = 0, pro_tokens: int = 0):
         self._ensure_initialized()
         if self.enabled:
             user_ref = self.db.collection("users").document(uid)
@@ -118,7 +162,8 @@ class FirestoreService:
                 user["tokens_used"]["pro"] += pro_tokens
                 user["tokens_used"]["total"] += flash_tokens + pro_tokens
     
-    async def update_last_accessed(self, uid: str):
+    @offload
+    def update_last_accessed(self, uid: str):
         self._ensure_initialized()
         if self.enabled:
             self.db.collection("users").document(uid).update({
@@ -127,7 +172,8 @@ class FirestoreService:
         elif uid in self._dev_data["users"]:
             self._dev_data["users"][uid]["last_accessed"] = datetime.now(timezone.utc)
     
-    async def update_user_settings(self, uid: str, settings: Dict) -> bool:
+    @offload
+    def update_user_settings(self, uid: str, settings: Dict) -> bool:
         """Update user settings like custom API key."""
         if self.enabled:
             self.db.collection("users").document(uid).update({
@@ -147,7 +193,8 @@ class FirestoreService:
             return user.get("settings", {})
         return {}
 
-    async def get_all_users(self) -> List[Dict]:
+    @offload
+    def get_all_users(self) -> List[Dict]:
         self._ensure_initialized()
         if self.enabled:
             users = []
@@ -158,7 +205,8 @@ class FirestoreService:
             return users
         return list(self._dev_data["users"].values())
     
-    async def delete_user(self, uid: str):
+    @offload
+    def delete_user(self, uid: str):
         self._ensure_initialized()
         if self.enabled:
             self.db.collection("users").document(uid).delete()
@@ -169,7 +217,8 @@ class FirestoreService:
         else:
             self._dev_data["users"].pop(uid, None)
     
-    async def reset_user_tokens(self, uid: str):
+    @offload
+    def reset_user_tokens(self, uid: str):
         self._ensure_initialized()
         if self.enabled:
             self.db.collection("users").document(uid).update({
@@ -177,9 +226,165 @@ class FirestoreService:
             })
         elif uid in self._dev_data["users"]:
             self._dev_data["users"][uid]["tokens_used"] = {"total": 0, "flash": 0, "pro": 0}
-    
+
+    # Monthly token cap methods
+
+    @offload
+    def check_and_reset_monthly_tokens(self, uid: str, user_data: Dict) -> Dict:
+        """Lazily reset monthly token counter if the month has rolled over."""
+        self._ensure_initialized()
+        current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+        stored_month = user_data.get("token_month_year", current_month)
+        if stored_month != current_month:
+            reset = {
+                "tokens_used_this_month": {"total": 0, "flash": 0, "pro": 0},
+                "token_month_year": current_month,
+            }
+            if self.enabled:
+                self.db.collection("users").document(uid).update(reset)
+            elif uid in self._dev_data["users"]:
+                self._dev_data["users"][uid].update(reset)
+            user_data = {**user_data, **reset}
+        return user_data
+
+    @offload
+    def update_monthly_tokens(self, uid: str, flash_tokens: int = 0, pro_tokens: int = 0):
+        self._ensure_initialized()
+        total = flash_tokens + pro_tokens
+        if self.enabled:
+            self.db.collection("users").document(uid).update({
+                "tokens_used_this_month.flash": firestore.Increment(flash_tokens),
+                "tokens_used_this_month.pro": firestore.Increment(pro_tokens),
+                "tokens_used_this_month.total": firestore.Increment(total),
+            })
+        elif uid in self._dev_data["users"]:
+            u = self._dev_data["users"][uid]
+            m = u.setdefault("tokens_used_this_month", {"total": 0, "flash": 0, "pro": 0})
+            m["flash"] += flash_tokens
+            m["pro"] += pro_tokens
+            m["total"] += total
+
+    @offload
+    def set_user_token_cap(self, uid: str, cap: int):
+        self._ensure_initialized()
+        if self.enabled:
+            self.db.collection("users").document(uid).update({"token_cap": cap})
+        elif uid in self._dev_data["users"]:
+            self._dev_data["users"][uid]["token_cap"] = cap
+
+    # Provider settings
+
+    async def update_provider_key(self, uid: str, provider: str, encrypted_key: Optional[str]):
+        """Store or remove an encrypted API key for a provider in user settings."""
+        self._ensure_initialized()
+        user = await self.get_user(uid)
+        if not user:
+            return False
+        settings = user.get("settings") or {}
+        providers = settings.get("providers") or {}
+        if encrypted_key is None:
+            providers.pop(provider, None)
+        else:
+            providers[provider] = encrypted_key
+        settings["providers"] = providers
+        return await self.update_user_settings(uid, settings)
+
+    async def update_preferred_provider(self, uid: str, provider: str):
+        self._ensure_initialized()
+        user = await self.get_user(uid)
+        if not user:
+            return False
+        settings = user.get("settings") or {}
+        settings["preferred_provider"] = provider
+        return await self.update_user_settings(uid, settings)
+
+    # Access requests
+
+    @offload
+    def create_access_request(self, name: str, email: str, institution: str, use_case: str) -> Dict:
+        self._ensure_initialized()
+        import uuid
+        req_id = str(uuid.uuid4())
+        data = {
+            "id": req_id,
+            "name": name,
+            "email": email,
+            "institution": institution,
+            "use_case": use_case,
+            "status": "pending",
+            "created_at": datetime.now(timezone.utc),
+            "reviewed_by": None,
+            "reviewed_at": None,
+            "rejection_reason": None,
+        }
+        if self.enabled:
+            self.db.collection("access_requests").document(req_id).set(data)
+        else:
+            self._dev_data["access_requests"][req_id] = data
+        return data
+
+    @offload
+    def get_access_requests(self, status: Optional[str] = None) -> List[Dict]:
+        self._ensure_initialized()
+        if self.enabled:
+            query = self.db.collection("access_requests")
+            if status:
+                query = query.where("status", "==", status)
+            results = []
+            for doc in query.order_by("created_at", direction=firestore.Query.DESCENDING).stream():
+                d = doc.to_dict()
+                d["id"] = doc.id
+                results.append(d)
+            return results
+        reqs = list(self._dev_data["access_requests"].values())
+        if status:
+            reqs = [r for r in reqs if r["status"] == status]
+        return sorted(reqs, key=lambda r: r.get("created_at", ""), reverse=True)
+
+    @offload
+    def get_access_request(self, req_id: str) -> Optional[Dict]:
+        self._ensure_initialized()
+        if self.enabled:
+            doc = self.db.collection("access_requests").document(req_id).get()
+            if doc.exists:
+                d = doc.to_dict()
+                d["id"] = doc.id
+                return d
+            return None
+        return self._dev_data["access_requests"].get(req_id)
+
+    @offload
+    def get_access_request_by_email(self, email: str) -> Optional[Dict]:
+        self._ensure_initialized()
+        if self.enabled:
+            for doc in self.db.collection("access_requests").where("email", "==", email).limit(1).stream():
+                d = doc.to_dict()
+                d["id"] = doc.id
+                return d
+            return None
+        for r in self._dev_data["access_requests"].values():
+            if r["email"].lower() == email.lower():
+                return r
+        return None
+
+    @offload
+    def update_access_request(self, req_id: str, status: str, reviewed_by: str,
+                                     rejection_reason: Optional[str] = None):
+        self._ensure_initialized()
+        update = {
+            "status": status,
+            "reviewed_by": reviewed_by,
+            "reviewed_at": datetime.now(timezone.utc),
+            "rejection_reason": rejection_reason,
+        }
+        if self.enabled:
+            self.db.collection("access_requests").document(req_id).update(update)
+        elif req_id in self._dev_data["access_requests"]:
+            self._dev_data["access_requests"][req_id].update(update)
+
     # Project operations
-    async def create_project(self, uid: str, name: str, theme: str, files: List[Dict], 
+    @offload
+    def create_project(self, uid: str, name: str, theme: str, files: List[Dict], 
                             main_file: str, custom_theme: str = None) -> Dict:
         self._ensure_initialized()
         import uuid
@@ -191,10 +396,12 @@ class FirestoreService:
             "custom_theme": custom_theme,
             "files": files,
             "main_file": main_file,
+            "folder": "",
+            "sort_order": 0,
             "created_at": datetime.now(timezone.utc),
             "updated_at": datetime.now(timezone.utc)
         }
-        
+
         if self.enabled:
             self.db.collection("projects").document(project_id).set(project_data)
         else:
@@ -202,7 +409,8 @@ class FirestoreService:
             
         return {"id": project_id, **serialize_timestamps(project_data)}
     
-    async def get_project(self, project_id: str, uid: str) -> Optional[Dict]:
+    @offload
+    def get_project(self, project_id: str, uid: str) -> Optional[Dict]:
         self._ensure_initialized()
         if self.enabled:
             doc = self.db.collection("projects").document(project_id).get()
@@ -216,32 +424,59 @@ class FirestoreService:
             return {"id": project_id, **serialize_timestamps(project)}
         return None
     
-    async def get_user_projects(self, uid: str) -> List[Dict]:
+    @offload
+    def get_user_projects(self, uid: str) -> List[Dict]:
         self._ensure_initialized()
         if self.enabled:
             projects = []
-            for doc in self.db.collection("projects").where("user_id", "==", uid).stream():
+            # Field mask: the listing never renders file bodies, and they dominate doc size.
+            query = (self.db.collection("projects").where("user_id", "==", uid)
+                     .select(["name", "main_file", "theme", "custom_theme",
+                              "folder", "sort_order", "created_at", "updated_at"]))
+            for doc in query.stream():
                 data = serialize_timestamps(doc.to_dict())
                 projects.append({"id": doc.id, **data})
             return projects
         return [{"id": pid, **serialize_timestamps(p)} for pid, p in self._dev_data["projects"].items() 
                 if p.get("user_id") == uid]
     
-    async def update_project(self, project_id: str, uid: str, files: List[Dict]) -> bool:
+    @offload
+    def update_project(self, project_id: str, uid: str, files: List[Dict],
+                       base_updated_at: Optional[str] = None) -> Dict:
+        """
+        Write files atomically. When base_updated_at is given, the write is rejected if the
+        document moved since the client last read it, so a second editor cannot be clobbered.
+        Returns {"ok": True, "updated_at": iso} or {"ok": False, "reason": "conflict"|"not_found"}.
+        """
         self._ensure_initialized()
-        project = await self.get_project(project_id, uid)
-        if not project:
-            return False
-            
-        if self.enabled:
-            self.db.collection("projects").document(project_id).update({
-                "files": files,
-                "updated_at": datetime.now(timezone.utc)
-            })
-        else:
-            self._dev_data["projects"][project_id]["files"] = files
-            self._dev_data["projects"][project_id]["updated_at"] = datetime.now(timezone.utc)
-        return True
+        now = datetime.now(timezone.utc)
+
+        if not self.enabled:
+            p = self._dev_data["projects"].get(project_id)
+            if not p or p.get("user_id") != uid:
+                return {"ok": False, "reason": "not_found"}
+            if base_updated_at:
+                stored = serialize_timestamps(p).get("updated_at")
+                if stored and not same_instant(stored, base_updated_at):
+                    return {"ok": False, "reason": "conflict", "updated_at": stored}
+            p["files"], p["updated_at"] = files, now
+            return {"ok": True, "updated_at": now.isoformat()}
+
+        ref = self.db.collection("projects").document(project_id)
+
+        @firestore.transactional
+        def _apply(transaction) -> Dict:
+            snap = ref.get(transaction=transaction)
+            if not snap.exists or snap.to_dict().get("user_id") != uid:
+                return {"ok": False, "reason": "not_found"}
+            if base_updated_at:
+                stored = serialize_timestamps(snap.to_dict()).get("updated_at")
+                if stored and not same_instant(stored, base_updated_at):
+                    return {"ok": False, "reason": "conflict", "updated_at": stored}
+            transaction.update(ref, {"files": files, "updated_at": now})
+            return {"ok": True, "updated_at": now.isoformat()}
+
+        return _apply(self.db.transaction())
     
     async def update_project_name(self, project_id: str, uid: str, name: str) -> bool:
         self._ensure_initialized()
@@ -250,15 +485,48 @@ class FirestoreService:
             return False
             
         if self.enabled:
-            self.db.collection("projects").document(project_id).update({
-                "name": name,
-                "updated_at": datetime.now(timezone.utc)
-            })
+            await asyncio.to_thread(
+                self.db.collection("projects").document(project_id).update,
+                {"name": name, "updated_at": datetime.now(timezone.utc)},
+            )
         else:
             self._dev_data["projects"][project_id]["name"] = name
             self._dev_data["projects"][project_id]["updated_at"] = datetime.now(timezone.utc)
         return True
     
+    @offload
+    def set_project_placement(self, project_id: str, uid: str,
+                              folder: Optional[str] = None,
+                              sort_order: Optional[int] = None) -> bool:
+        """Move a project between folders and/or set its position. Ownership checked in-transaction."""
+        self._ensure_initialized()
+        update: Dict = {}
+        if folder is not None:
+            update["folder"] = folder
+        if sort_order is not None:
+            update["sort_order"] = sort_order
+        if not update:
+            return False
+
+        if not self.enabled:
+            p = self._dev_data["projects"].get(project_id)
+            if not p or p.get("user_id") != uid:
+                return False
+            p.update(update)
+            return True
+
+        ref = self.db.collection("projects").document(project_id)
+
+        @firestore.transactional
+        def _apply(transaction) -> bool:
+            snap = ref.get(transaction=transaction)
+            if not snap.exists or snap.to_dict().get("user_id") != uid:
+                return False
+            transaction.update(ref, update)
+            return True
+
+        return _apply(self.db.transaction())
+
     async def delete_project(self, project_id: str, uid: str) -> bool:
         self._ensure_initialized()
         project = await self.get_project(project_id, uid)
@@ -266,7 +534,7 @@ class FirestoreService:
             return False
             
         if self.enabled:
-            self.db.collection("projects").document(project_id).delete()
+            await asyncio.to_thread(self.db.collection("projects").document(project_id).delete)
         else:
             self._dev_data["projects"].pop(project_id, None)
         return True
@@ -287,7 +555,8 @@ class FirestoreService:
         )
     
     # Chat operations
-    async def save_chat(self, uid: str, project_id: str, messages: List[Dict]) -> str:
+    @offload
+    def save_chat(self, uid: str, project_id: str, messages: List[Dict]) -> str:
         self._ensure_initialized()
         import uuid
         chat_id = str(uuid.uuid4())
@@ -305,7 +574,8 @@ class FirestoreService:
             
         return chat_id
     
-    async def get_chat_history(self, uid: str, project_id: str) -> List[Dict]:
+    @offload
+    def get_chat_history(self, uid: str, project_id: str) -> List[Dict]:
         self._ensure_initialized()
         if self.enabled:
             chats = []
@@ -321,12 +591,16 @@ class FirestoreService:
                 if c.get("uid") == uid and (not project_id or c.get("project_id") == project_id)]
     
     # Stats
-    async def get_stats(self) -> Dict:
+    @offload
+    def get_stats(self) -> Dict:
         self._ensure_initialized()
         if self.enabled:
-            users = list(self.db.collection("users").stream())
-            projects = list(self.db.collection("projects").stream())
-            
+            users = list(self.db.collection("users")
+                         .select(["tokens_used", "last_accessed"]).stream())
+            # Server-side aggregation: the previous full scan pulled every project's
+            # file bodies across the wire only to call len() on the result.
+            total_projects = self.db.collection("projects").count().get()[0][0].value
+
             total_tokens = 0
             active_today = 0
             today = datetime.now(timezone.utc).date()
@@ -340,7 +614,7 @@ class FirestoreService:
             
             return {
                 "totalUsers": len(users),
-                "totalProjects": len(projects),
+                "totalProjects": int(total_projects),
                 "totalTokens": total_tokens,
                 "activeToday": active_today
             }
@@ -355,7 +629,8 @@ class FirestoreService:
         }
     
     # Feedback
-    async def save_feedback(self, feedback: str, uid: str = None):
+    @offload
+    def save_feedback(self, feedback: str, uid: str = None):
         self._ensure_initialized()
         import uuid
         feedback_id = str(uuid.uuid4())
@@ -371,7 +646,8 @@ class FirestoreService:
         return feedback_id
     
     # Invite codes
-    async def create_invite(self, created_by: str, uses: int = 1) -> Dict:
+    @offload
+    def create_invite(self, created_by: str, uses: int = 1) -> Dict:
         self._ensure_initialized()
         import uuid
         import secrets
@@ -393,7 +669,8 @@ class FirestoreService:
         
         return invite_data
     
-    async def validate_invite(self, code: str) -> Optional[Dict]:
+    @offload
+    def validate_invite(self, code: str) -> Optional[Dict]:
         self._ensure_initialized()
         code = code.strip().upper()
         if self.enabled:
@@ -409,7 +686,8 @@ class FirestoreService:
             return invite
         return None
     
-    async def use_invite(self, code: str, used_by_uid: str) -> bool:
+    @offload
+    def use_invite(self, code: str, used_by_uid: str) -> bool:
         self._ensure_initialized()
         code = code.strip().upper()
         if self.enabled:
@@ -432,7 +710,8 @@ class FirestoreService:
             return True
         return False
     
-    async def get_all_invites(self) -> List[Dict]:
+    @offload
+    def get_all_invites(self) -> List[Dict]:
         self._ensure_initialized()
         if self.enabled:
             invites = []
@@ -443,7 +722,8 @@ class FirestoreService:
             return invites
         return list(self._dev_data["invites"].values())
     
-    async def deactivate_invite(self, code: str) -> bool:
+    @offload
+    def deactivate_invite(self, code: str) -> bool:
         self._ensure_initialized()
         code = code.strip().upper()
         if self.enabled:

@@ -45,7 +45,9 @@ import { useAuth } from '../../hooks/useAuth';
 import { api } from '../../services/api';
 import { MonacoEditor, MonacoEditorHandle, EditorSelection, CompileError } from './MonacoEditor';
 import { AgentPanel } from '../ai/AgentPanel';
-import { PdfViewer } from './PdfViewer';
+import { PdfViewer, type PdfViewerHandle } from './PdfViewer';
+import { ConfirmDialog } from '../common/ConfirmDialog';
+import { joinProject, peers, collabEnabled, type CollabSession, type Collaborator } from '../../services/collab';
 
 /** Parse LaTeX log output into line-number + message pairs for Monaco markers. */
 function parseLatexErrors(errorLog: string | null): CompileError[] {
@@ -126,11 +128,18 @@ export function Editor() {
   const titleInputRef = useRef<HTMLInputElement>(null);
   const filePanelRef = useRef<ImperativePanelHandle>(null);
   const monacoEditorRef = useRef<MonacoEditorHandle>(null);
+  const pdfViewerRef = useRef<PdfViewerHandle>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const currentProjectRef = useRef(currentProject);
   currentProjectRef.current = currentProject;
+  // The autosave timer closes over its first render; read collab through a ref.
+  const collabRef = useRef<CollabSession | null>(null);
   const [editorSelection, setEditorSelection] = useState<EditorSelection | null>(null);
+  const [newFileDialog, setNewFileDialog] = useState<{ type: 'tex' | 'bib' | 'cls'; suggested: string } | null>(null);
+  const [deleteFileDialog, setDeleteFileDialog] = useState<string | null>(null);
+  const [collab, setCollab] = useState<CollabSession | null>(null);
+  const [collaborators, setCollaborators] = useState<Collaborator[]>([]);
 
   const isDark = mode === 'dark';
   const purpleBorder = isDark ? '#262626' : '#e4e4e7';
@@ -142,6 +151,24 @@ export function Editor() {
   useEffect(() => {
     if (projectId) loadProject(projectId);
   }, [projectId]);
+
+  useEffect(() => {
+    if (!collabEnabled || !currentProject?.id) return;
+    const session = joinProject(currentProject.id, { name: user?.username || user?.email || 'Anonymous' });
+    if (!session) return;
+    setCollab(session);
+    collabRef.current = session;
+    const sync = () => setCollaborators(peers(session.provider));
+    session.provider.awareness.on('change', sync);
+    sync();
+    return () => {
+      session.provider.awareness.off('change', sync);
+      session.destroy();
+      collabRef.current = null;
+      setCollab(null);
+      setCollaborators([]);
+    };
+  }, [currentProject?.id, user?.username, user?.email]);
 
   useEffect(() => {
     if (editingTitle && titleInputRef.current) {
@@ -175,14 +202,24 @@ export function Editor() {
   const handleSave = useCallback(async () => {
     if (!currentProject) return;
     try {
-      const result = await api.saveProject(currentProject.id, currentProject.files);
+      // With CRDT convergence every client holds identical text, so the optimistic
+      // baseline would reject a write that cannot conflict. Yjs is the guard now.
+      const result = await api.saveProject(
+        currentProject.id, currentProject.files, collab ? undefined : currentProject.updatedAt
+      );
       setUnsavedChanges(false);
       if (result?.updated_at) setUpdatedAt(result.updated_at);
       setSnackbar({ open: true, message: 'Saved', severity: 'success' });
     } catch (err: any) {
-      setSnackbar({ open: true, message: err.message, severity: 'error' });
+      setSnackbar({
+        open: true,
+        severity: 'error',
+        message: err.status === 409
+          ? 'This document was changed elsewhere. Reload before saving to avoid losing that work.'
+          : err.message,
+      });
     }
-  }, [currentProject, setUnsavedChanges, setUpdatedAt]);
+  }, [currentProject, collab, setUnsavedChanges, setUpdatedAt]);
 
   const handleCompile = useCallback(async () => {
     if (!currentProject) return;
@@ -205,19 +242,62 @@ export function Editor() {
     }
   }, [currentProject, setCompiling, setCompileError, setPdfUrl]);
 
+  /**
+   * Click in the PDF -> jump to the source that produced it. SyncTeX answers with a
+   * file name, which may not be the open tab, so switch files before jumping.
+   */
+  const handleSourceClick = useCallback(async (page: number, x: number, y: number) => {
+    const pdfId = pdfUrl?.split('/').pop();
+    if (!pdfId) return;
+    try {
+      const { file, line } = await api.synctex(pdfId, page, x, y);
+      const target = currentProject?.files.find(f => f.name === file);
+      if (target && file !== activeFile) {
+        setActiveFile(file);
+        // Let the editor mount the new model before moving the cursor.
+        requestAnimationFrame(() => monacoEditorRef.current?.goToLine(line));
+      } else {
+        monacoEditorRef.current?.goToLine(line);
+      }
+    } catch {
+      // No mapping at that point (margins, page furniture) — not worth interrupting for.
+    }
+  }, [pdfUrl, currentProject, activeFile, setActiveFile]);
+
+  const NEW_FILE_TEMPLATES: Record<string, string> = {
+    tex: '% New LaTeX file\n',
+    bib: '% BibTeX references\n',
+    cls: '% Custom class file\n\\ProvidesClass{custom}[2024/01/01]\n\\LoadClass{article}\n',
+  };
+
+  /** Forward search: jump from the cursor to the matching place in the PDF. */
+  const handleRevealInPdf = useCallback(async () => {
+    const pdfId = pdfUrl?.split('/').pop();
+    if (!pdfId || !activeFile) return;
+    const line = monacoEditorRef.current?.getCursorLine() ?? 1;
+    try {
+      const { page, x, y } = await api.synctexForward(pdfId, activeFile, line);
+      pdfViewerRef.current?.revealPoint(page, x, y);
+    } catch {
+      setSnackbar({ open: true, message: 'That line produced no visible output', severity: 'error' });
+    }
+  }, [pdfUrl, activeFile]);
+
   const handleAddFile = (type: 'tex' | 'bib' | 'cls') => {
     const names: Record<string, string> = { tex: 'newfile.tex', bib: 'references.bib', cls: 'custom.cls' };
-    const templates: Record<string, string> = {
-      tex: '% New LaTeX file\n',
-      bib: '% BibTeX references\n',
-      cls: '% Custom class file\n\\ProvidesClass{custom}[2024/01/01]\n\\LoadClass{article}\n',
-    };
-    const name = prompt('File name:', names[type]);
-    if (name) {
-      addFile({ name, content: templates[type], type });
-      setActiveFile(name);
-    }
+    setNewFileDialog({ type, suggested: names[type] });
     setAddMenuAnchor(null);
+  };
+
+  const handleCreateFile = (name: string) => {
+    const type = newFileDialog!.type;
+    setNewFileDialog(null);
+    if (currentProject?.files.some(f => f.name === name)) {
+      setSnackbar({ open: true, message: `A file named "${name}" already exists`, severity: 'error' });
+      return;
+    }
+    addFile({ name, content: NEW_FILE_TEMPLATES[type], type });
+    setActiveFile(name);
   };
 
   const handleStartRename = (fileName: string) => {
@@ -248,9 +328,14 @@ export function Editor() {
       setSnackbar({ open: true, message: 'Cannot delete last file', severity: 'error' });
       return;
     }
-    if (!confirm(`Delete ${fileName}?`)) return;
-    removeFile(fileName);
     setFileMenuAnchor(null);
+    setDeleteFileDialog(fileName);
+  };
+
+  const handleConfirmDeleteFile = () => {
+    const fileName = deleteFileDialog!;
+    setDeleteFileDialog(null);
+    removeFile(fileName);
     setSnackbar({ open: true, message: 'File deleted', severity: 'success' });
   };
 
@@ -326,10 +411,11 @@ export function Editor() {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); handleSave(); }
       if ((e.ctrlKey || e.metaKey) && e.key === 'b') { e.preventDefault(); handleCompile(); }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'j') { e.preventDefault(); handleRevealInPdf(); }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleSave, handleCompile]);
+  }, [handleSave, handleCompile, handleRevealInPdf]);
 
   useEffect(() => {
     if (!unsavedChanges) return;
@@ -338,11 +424,19 @@ export function Editor() {
       const proj = currentProjectRef.current;
       if (!proj) return;
       try {
-        const result = await api.saveProject(proj.id, proj.files);
+        const result = await api.saveProject(proj.id, proj.files, collabRef.current ? undefined : proj.updatedAt);
         setUnsavedChanges(false);
         if (result?.updated_at) setUpdatedAt(result.updated_at);
-      } catch {
-        // silent
+      } catch (err: any) {
+        // Transient failures stay quiet and retry on the next edit, but a conflict never
+        // resolves itself — staying silent would let the user type into a doc they cannot save.
+        if (err?.status === 409) {
+          setSnackbar({
+            open: true,
+            severity: 'error',
+            message: 'This document was changed elsewhere. Reload to get the latest version.',
+          });
+        }
       }
     }, 3000);
     return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current); };
@@ -465,6 +559,28 @@ export function Editor() {
 
         {/* Right: actions */}
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexShrink: 0, ml: 1 }}>
+          {collaborators.length > 0 && (
+            <Box sx={{ display: 'flex', alignItems: 'center', mr: 1 }}>
+              {collaborators.slice(0, 4).map((c) => (
+                <Tooltip key={c.clientId} title={c.name}>
+                  <Avatar
+                    sx={{
+                      width: 22, height: 22, fontSize: 10, fontWeight: 600,
+                      bgcolor: c.color, color: '#fff',
+                      ml: '-6px', border: `2px solid ${surfaceBg}`,
+                    }}
+                  >
+                    {c.name.charAt(0).toUpperCase()}
+                  </Avatar>
+                </Tooltip>
+              ))}
+              {collaborators.length > 4 && (
+                <Typography sx={{ fontSize: 11, color: 'text.secondary', ml: 0.75 }}>
+                  +{collaborators.length - 4}
+                </Typography>
+              )}
+            </Box>
+          )}
           <Tooltip title="Compile (Ctrl+B)">
             <Box
               component="button"
@@ -669,7 +785,7 @@ export function Editor() {
                       {outline.map((item, idx) => (
                         <ListItem key={idx} disablePadding sx={{ px: 0.5 }}>
                           <ListItemButton
-                            onClick={() => monacoEditorRef.current?.goToLine(item.line)}
+                            onClick={() => { monacoEditorRef.current?.goToLine(item.line); if (pdfUrl) handleRevealInPdf(); }}
                             sx={{
                               borderRadius: '4px',
                               py: 0.2,
@@ -754,6 +870,7 @@ export function Editor() {
                     onSelectionChange={setEditorSelection}
                     clsContent={currentProject?.files.find((f: { name: string }) => f.name.endsWith('.cls'))?.content}
                     compileErrors={parseLatexErrors(compileError)}
+                    collab={collab}
                   />
                 ) : null}
               </Box>
@@ -791,16 +908,43 @@ export function Editor() {
 
               <Box sx={{ flex: 1, overflow: 'hidden', bgcolor: pdfBg }}>
                 {compileError ? (
-                  <Alert severity="error" sx={{ m: 1, whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: 11, '& .MuiAlert-message': { width: '100%' } }}>
-                    {compileError}
-                  </Alert>
+                  <Box sx={{ m: 1, display: 'flex', flexDirection: 'column', gap: 1, maxHeight: '100%', overflow: 'auto' }}>
+                    {/* The line numbers are already parsed for Monaco's markers; make them
+                        navigable here too rather than leaving the user to find them by eye. */}
+                    {parseLatexErrors(compileError).map((err, i) => (
+                      <Alert
+                        key={i}
+                        severity="error"
+                        onClick={() => monacoEditorRef.current?.goToLine(err.line)}
+                        sx={{
+                          py: 0.5, cursor: 'pointer', alignItems: 'center',
+                          '& .MuiAlert-message': { width: '100%', py: 0.5 },
+                          '&:hover': { filter: 'brightness(1.05)' },
+                        }}
+                      >
+                        <Typography sx={{ fontSize: 11, fontFamily: 'monospace' }}>
+                          <Box component="span" sx={{ fontWeight: 700, mr: 1 }}>line {err.line}</Box>
+                          {err.message}
+                        </Typography>
+                      </Alert>
+                    ))}
+                    <Alert severity="error" variant="outlined" sx={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: 10.5, '& .MuiAlert-message': { width: '100%' } }}>
+                      {compileError}
+                    </Alert>
+                  </Box>
                 ) : pdfUrl ? (
-                  <PdfViewer url={pdfUrl} zoom={zoom} />
+                  <PdfViewer ref={pdfViewerRef} url={pdfUrl} zoom={zoom} onSourceClick={handleSourceClick} />
                 ) : (
                   <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
-                    <Typography variant="caption" color="text.secondary" sx={{ fontSize: 11 }}>
-                      Press Ctrl+B to compile
-                    </Typography>
+                    <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
+                      <Description sx={{ fontSize: 28, color: 'text.disabled' }} />
+                      <Typography sx={{ fontSize: 12, color: 'text.primary', fontWeight: 500 }}>
+                        No preview yet
+                      </Typography>
+                      <Typography sx={{ fontSize: 11, color: 'text.secondary' }}>
+                        Press <strong>Ctrl+B</strong> to compile
+                      </Typography>
+                    </Box>
                   </Box>
                 )}
               </Box>
@@ -863,6 +1007,26 @@ export function Editor() {
           </Box>
         </Tooltip>
       )}
+
+      <ConfirmDialog
+        open={Boolean(newFileDialog)}
+        title="New file"
+        inputLabel="File name"
+        defaultValue={newFileDialog?.suggested ?? ''}
+        confirmLabel="Create"
+        onConfirm={handleCreateFile}
+        onCancel={() => setNewFileDialog(null)}
+      />
+
+      <ConfirmDialog
+        open={Boolean(deleteFileDialog)}
+        title="Delete file"
+        message={`Delete "${deleteFileDialog}"? This cannot be undone.`}
+        confirmLabel="Delete"
+        destructive
+        onConfirm={handleConfirmDeleteFile}
+        onCancel={() => setDeleteFileDialog(null)}
+      />
 
       <Snackbar
         open={snackbar.open}

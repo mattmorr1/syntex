@@ -1,4 +1,6 @@
 import os
+import re
+import asyncio
 import tempfile
 import subprocess
 import shutil
@@ -11,6 +13,7 @@ class LaTeXService:
         self.compiler = Config.LATEX_COMPILER
         self.timeout = Config.LATEX_TIMEOUT
         self.compilers = ["pdflatex", "xelatex", "lualatex"]
+        self._slots = asyncio.Semaphore(Config.LATEX_CONCURRENCY)
     
     @staticmethod
     def _safe_path(base_dir: str, name: str) -> str:
@@ -21,7 +24,14 @@ class LaTeXService:
             raise ValueError("Invalid file path: path traversal detected")
         return str(target)
 
-    async def compile(self, files: List[Dict], main_file: str) -> Tuple[bool, Optional[bytes], Optional[str]]:
+    async def compile(self, files: List[Dict], main_file: str
+                      ) -> Tuple[bool, Optional[bytes], Optional[str], Optional[bytes]]:
+        """Returns (success, pdf_bytes, error, synctex_gz_bytes)."""
+        async with self._slots:
+            return await asyncio.to_thread(self._compile_sync, files, main_file)
+
+    def _compile_sync(self, files: List[Dict], main_file: str
+                      ) -> Tuple[bool, Optional[bytes], Optional[str], Optional[bytes]]:
         temp_dir = tempfile.mkdtemp()
 
         try:
@@ -54,7 +64,7 @@ class LaTeXService:
             
             main_path = self._safe_path(temp_dir, main_file)
             if not os.path.exists(main_path):
-                return False, None, f"Main file not found: {main_file}"
+                return False, None, f"Main file not found: {main_file}", None
 
             # Determine compiler based on document
             compiler = self._detect_compiler(files, main_file)
@@ -62,15 +72,15 @@ class LaTeXService:
 
             # First pass
             result = subprocess.run(
-                [compiler, "-interaction=nonstopmode", "-halt-on-error", main_file],
+                [compiler, "-synctex=1", "-interaction=nonstopmode", "-halt-on-error", main_file],
                 cwd=temp_dir,
                 capture_output=True,
                 text=True,
                 timeout=self.timeout
             )
 
-            # Check if bibtex is needed (plain bibtex: \citation; biblatex+bibtex: \abx@aux@cite)
-            needs_rerun = False
+            # Check if bibtex is needed (natbib/plain: \citation; biblatex+bibtex: \abx@aux@cite)
+            ran_bibtex = False
             if os.path.exists(aux_file):
                 with open(aux_file, "r") as f:
                     aux_content = f.read()
@@ -81,12 +91,24 @@ class LaTeXService:
                         capture_output=True,
                         timeout=self.timeout
                     )
-                    needs_rerun = True
+                    ran_bibtex = True
 
-            # Only run second pass if references/citations exist
-            if needs_rerun or (result.stdout and "Rerun" in result.stdout):
+            # After bibtex, two more pdflatex passes are required:
+            #   pass 2 — reads .bbl and writes \bibcite entries to .aux
+            #   pass 3 — resolves \cite → \bibcite (citations now correct)
+            # Without the third pass, natbib/bibtex citations render as "?" or are missing.
+            if ran_bibtex:
+                for _ in range(2):
+                    result = subprocess.run(
+                        [compiler, "-synctex=1", "-interaction=nonstopmode", "-halt-on-error", main_file],
+                        cwd=temp_dir,
+                        capture_output=True,
+                        text=True,
+                        timeout=self.timeout
+                    )
+            elif result.stdout and "Rerun" in result.stdout:
                 result = subprocess.run(
-                    [compiler, "-interaction=nonstopmode", "-halt-on-error", main_file],
+                    [compiler, "-synctex=1", "-interaction=nonstopmode", "-halt-on-error", main_file],
                     cwd=temp_dir,
                     capture_output=True,
                     text=True,
@@ -99,22 +121,86 @@ class LaTeXService:
             if os.path.exists(pdf_path):
                 with open(pdf_path, "rb") as f:
                     pdf_content = f.read()
-                return True, pdf_content, None
+                synctex = None
+                sync_path = self._safe_path(temp_dir, main_file.replace(".tex", ".synctex.gz"))
+                if os.path.exists(sync_path):
+                    with open(sync_path, "rb") as f:
+                        synctex = f.read()
+                return True, pdf_content, None, synctex
             else:
                 # Extract error from log
                 log_path = self._safe_path(temp_dir, main_file.replace(".tex", ".log"))
                 error_msg = self._extract_error(log_path) if os.path.exists(log_path) else result.stderr
-                return False, None, error_msg or "PDF generation failed"
+                return False, None, error_msg or "PDF generation failed", None
                 
         except subprocess.TimeoutExpired:
-            return False, None, f"Compilation timed out after {self.timeout} seconds"
+            return False, None, f"Compilation timed out after {self.timeout} seconds", None
         except FileNotFoundError as e:
-            return False, None, f"LaTeX compiler not found: {compiler}. Install TeX Live or MiKTeX."
+            return False, None, f"LaTeX compiler not found: {compiler}. Install TeX Live or MiKTeX.", None
         except Exception as e:
-            return False, None, str(e)
+            return False, None, str(e), None
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
     
+    # synctex prints "Input:<path>" and "Line:<n>" between result markers
+    _SYNCTEX_INPUT = re.compile(r"^Input:(.+)$", re.MULTILINE)
+    _SYNCTEX_LINE = re.compile(r"^Line:(\d+)$", re.MULTILINE)
+
+    def synctex_edit(self, synctex_gz: bytes, page: int, x: float, y: float
+                     ) -> Optional[Tuple[str, int]]:
+        """
+        Backward search: PDF point -> (source file name, line). Blocking.
+
+        Only the .synctex.gz is needed — the CLI resolves positions from it alone, with
+        no PDF and no sources present, so a build restores from one small blob.
+        """
+        temp_dir = tempfile.mkdtemp()
+        try:
+            with open(os.path.join(temp_dir, "main.synctex.gz"), "wb") as f:
+                f.write(synctex_gz)
+            result = subprocess.run(
+                ["synctex", "edit", "-o", f"{page}:{x}:{y}:main.pdf"],
+                cwd=temp_dir, capture_output=True, text=True, timeout=10,
+            )
+            m_file = self._SYNCTEX_INPUT.search(result.stdout)
+            m_line = self._SYNCTEX_LINE.search(result.stdout)
+            if not m_file or not m_line:
+                return None
+            # Paths are absolute into the (long-gone) compile dir; only the name is portable.
+            return os.path.basename(m_file.group(1).strip().replace("\\", "/")), int(m_line.group(1))
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+            print(f"synctex_edit failed: {e}")
+            return None
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    _SYNCTEX_PAGE = re.compile(r"^Page:(\d+)$", re.MULTILINE)
+    _SYNCTEX_H = re.compile(r"^h:([\d.]+)$", re.MULTILINE)
+    _SYNCTEX_V = re.compile(r"^v:([\d.]+)$", re.MULTILINE)
+
+    def synctex_view(self, synctex_gz: bytes, file_name: str, line: int
+                     ) -> Optional[Tuple[int, float, float]]:
+        """Forward search: source line -> (page, x, y) in PDF points. Blocking."""
+        temp_dir = tempfile.mkdtemp()
+        try:
+            with open(os.path.join(temp_dir, "main.synctex.gz"), "wb") as f:
+                f.write(synctex_gz)
+            result = subprocess.run(
+                ["synctex", "view", "-i", f"{line}:1:{file_name}", "-o", "main.pdf"],
+                cwd=temp_dir, capture_output=True, text=True, timeout=10,
+            )
+            m_page = self._SYNCTEX_PAGE.search(result.stdout)
+            m_h = self._SYNCTEX_H.search(result.stdout)
+            m_v = self._SYNCTEX_V.search(result.stdout)
+            if not (m_page and m_h and m_v):
+                return None
+            return int(m_page.group(1)), float(m_h.group(1)), float(m_v.group(1))
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+            print(f"synctex_view failed: {e}")
+            return None
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     @staticmethod
     def _clean_tex_artifacts(text: str) -> str:
         """
@@ -123,8 +209,6 @@ class LaTeXService:
         gemini.py so that pre-existing (already-stored) documents are cleaned on
         every compile, not just at generation time.
         """
-        import re
-
         # --- \t tie-after accent (model uses \t as a tab/indent) ---
         # \t{X} → X  (braced form, e.g. \t{T}his → This)
         text = re.sub(r'\\t\{(.)\}', r'\1', text)

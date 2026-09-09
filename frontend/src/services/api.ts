@@ -35,8 +35,11 @@ async function request<T>(
   }
 
   if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: 'Request failed' }));
-    throw new Error(error.detail || 'Request failed');
+    const body = await response.json().catch(() => ({ detail: 'Request failed' }));
+    const detail = body.detail;
+    // FastAPI details may be strings or objects; an object stringifies to "[object Object]".
+    const message = typeof detail === 'string' ? detail : detail?.message || 'Request failed';
+    throw Object.assign(new Error(message), { status: response.status, detail });
   }
 
   return response.json();
@@ -77,6 +80,8 @@ export const api = {
       updatedAt: p.updated_at || p.updatedAt || p.created_at || p.createdAt || '',
       mainFile: p.main_file || p.mainFile,
       customTheme: p.custom_theme || p.customTheme,
+      folder: p.folder || '',
+      sortOrder: p.sort_order ?? 0,
     }));
   },
 
@@ -94,14 +99,36 @@ export const api = {
   createProject: (data: { name: string; theme: string; customTheme?: string }) =>
     request<any>('/projects', { method: 'POST', body: JSON.stringify(data) }),
   
-  saveProject: (id: string, files: any[]) =>
+  // baseUpdatedAt is the updated_at this client last saw; the server rejects the write
+  // with 409 if the project moved since, rather than silently overwriting another editor.
+  saveProject: (id: string, files: any[], baseUpdatedAt?: string) =>
     request<any>(`/projects/save-project`, {
       method: 'POST',
-      body: JSON.stringify({ project_id: id, files }),
+      body: JSON.stringify({ project_id: id, files, base_updated_at: baseUpdatedAt ?? null }),
     }),
 
   deleteProject: (id: string) =>
     request<void>(`/projects/delete-project/${id}`, { method: 'DELETE' }),
+
+  setPlacement: (id: string, placement: { folder?: string; sort_order?: number }) =>
+    request<any>(`/projects/${id}/placement`, {
+      method: 'PATCH',
+      body: JSON.stringify(placement),
+    }),
+
+  // Forward search: a source line -> the point in the PDF it produced.
+  synctexForward: (pdfId: string, file: string, line: number) =>
+    request<{ page: number; x: number; y: number }>(`/synctex/${pdfId}/forward`, {
+      method: 'POST',
+      body: JSON.stringify({ file, line }),
+    }),
+
+  // Backward search: a point in the rendered PDF -> the source file and line that produced it.
+  synctex: (pdfId: string, page: number, x: number, y: number) =>
+    request<{ file: string; line: number }>(`/synctex/${pdfId}`, {
+      method: 'POST',
+      body: JSON.stringify({ page, x, y }),
+    }),
 
   duplicateProject: (id: string) =>
     request<any>(`/projects/duplicate-project/${id}`, { method: 'POST' }),
@@ -193,23 +220,70 @@ export const api = {
 
   // Admin
   getUsers: () => request<any[]>('/admin/users'),
-  
+
   getStats: () => request<any>('/admin/stats'),
-  
+
   resetUserTokens: (uid: string) =>
     request<void>(`/admin/user/${uid}/reset-tokens`, { method: 'POST' }),
-  
+
   deleteUser: (uid: string) =>
     request<void>(`/admin/user/${uid}`, { method: 'DELETE' }),
 
+  setUserTokenCap: (uid: string, cap: number) =>
+    request<void>(`/admin/user/${uid}/token-cap`, {
+      method: 'PATCH',
+      body: JSON.stringify({ cap }),
+    }),
+
   // Invites
   getInvites: () => request<any[]>('/admin/invites'),
-  
+
   createInvite: (uses: number = 1) =>
     request<any>('/admin/invites', { method: 'POST', body: JSON.stringify({ uses }) }),
-  
+
   deactivateInvite: (code: string) =>
     request<void>(`/admin/invites/${code}`, { method: 'DELETE' }),
+
+  // Access requests
+  requestAccess: (data: { name: string; email: string; institution: string; use_case: string }) =>
+    fetch(`${API_BASE}/auth/request-access`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }).then(async r => {
+      if (!r.ok) { const e = await r.json().catch(() => ({ detail: 'Request failed' })); throw new Error(e.detail || 'Request failed'); }
+      return r.json();
+    }),
+
+  getAccessRequests: (status?: string) =>
+    request<any[]>(`/admin/access-requests${status ? `?status=${status}` : ''}`),
+
+  approveAccessRequest: (id: string) =>
+    request<any>(`/admin/access-requests/${id}/approve`, { method: 'POST' }),
+
+  rejectAccessRequest: (id: string, reason?: string) =>
+    request<any>(`/admin/access-requests/${id}/reject`, {
+      method: 'POST',
+      body: JSON.stringify({ reason: reason || null }),
+    }),
+
+  // Provider settings
+  getSettings: () => request<{ preferred_provider: string; providers_configured: Record<string, boolean> }>('/auth/settings'),
+
+  saveProviderKey: (provider: string, api_key: string) =>
+    request<void>('/auth/settings/provider-key', {
+      method: 'PUT',
+      body: JSON.stringify({ provider, api_key }),
+    }),
+
+  removeProviderKey: (provider: string) =>
+    request<void>(`/auth/settings/provider-key/${provider}`, { method: 'DELETE' }),
+
+  setPreferredProvider: (provider: string) =>
+    request<void>('/auth/settings/preferred-provider', {
+      method: 'PUT',
+      body: JSON.stringify({ provider }),
+    }),
 
   // Upload
   uploadFile: async (file: File, theme: string, customTheme?: string, clsContent?: string, maxTokens?: number): Promise<{ project_id: string; tokens_used: number; missing_images: string[] }> => {

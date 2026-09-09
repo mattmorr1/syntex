@@ -83,6 +83,11 @@ async def startup_event():
     db_service._ensure_initialized()
     print(f"App started successfully on port {os.environ.get('PORT', '8080')}")
 
+@app.on_event("shutdown")
+async def shutdown_event():
+    from api.services.gemini import gemini_service
+    await gemini_service.aclose()
+
 @app.get("/health")
 async def health_check():
     return {
