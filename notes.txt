@@ -34,6 +34,12 @@ collab hub deploys separately: needs min-instances=1 + session affinity
   Prefix-scoped; projects/ (user figures) is not matched.
 - leaked gemini key from commit 2d22006 tested against the API: HTTP 400, dead.
   Control test with the current key returned 200, so the method is sound.
+- DEPLOYED: build 6ffaef5a, revision uea-app-00090-s9n serving 100%.
+  Verified live: /health 200, app shell 200, forged-default token still 401, and the new
+  routes (synctex, synctex/forward, collab-token, placement) all return 401 rather than
+  falling through to the SPA catch-all, which is what proves they are deployed.
+  FERNET_KEY in env.yaml was checked against the live service before deploying and
+  matched, so stored provider keys survived the env replacement.
 
 **open, needs you:**
 - revoke the SMTP app password from commit 2d22006 (Google account, not gcloud).
@@ -41,8 +47,6 @@ collab hub deploys separately: needs min-instances=1 + session affinity
   revoked outright rather than replaced.
 - the admin password is also in that commit and still in use — change it, then update
   the admin-password secret
-- deploy this branch: nothing committed today is live yet. The running service is old
-  code plus the JWT_SECRET fix.
 - pick a collaboration transport: managed (needs an account only you can create) vs the
   self-hosted hub already in collab/ (needs its own service, min-instances=1,
   session affinity, and the same JWT_SECRET)
