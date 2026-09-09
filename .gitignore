@@ -117,3 +117,4 @@ config/env.yaml
 
 # Local virtualenv
 .venv/
+config/env.yaml.bak*
