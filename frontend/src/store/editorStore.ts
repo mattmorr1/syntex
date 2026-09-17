@@ -15,6 +15,8 @@ export interface Project {
   customTheme?: string;
   folder?: string;      // "" or absent is root; nesting lives in the string
   sortOrder?: number;
+  ownerUid?: string;    // absent on projects fetched before sharing existed
+  shared?: boolean;     // someone else owns this and shared it with me
   createdAt: string;
   updatedAt: string;
 }

@@ -22,6 +22,7 @@ export const collabEnabled = true;
 
 export interface Collaborator {
   clientId: number;
+  uid?: string;
   name: string;
   color: string;
 }
@@ -114,11 +115,21 @@ export function joinProject(
       }
       if (res.seed) seed(doc);
 
-      const seen: Collaborator[] = (res.peers || []).map((p: any) => ({
-        clientId: p.clientId,
-        name: p.name || 'Someone',
-        color: p.color || cursorColor(p.clientId),
-      }));
+      // One row per person, not per document instance: clientID is regenerated on every
+      // mount, so tabs and remounts of the same account would each show as a collaborator.
+      const byUser = new Map<string, Collaborator>();
+      for (const p of res.peers || []) {
+        const key = p.uid || String(p.clientId);
+        if (!byUser.has(key)) {
+          byUser.set(key, {
+            clientId: p.clientId,
+            uid: p.uid,
+            name: p.name || 'Someone',
+            color: p.color || cursorColor(p.clientId),
+          });
+        }
+      }
+      const seen = [...byUser.values()];
       peers = seen.length;
       subscribers.forEach((cb) => cb(seen));
 
@@ -150,6 +161,11 @@ export function joinProject(
       if (timer) clearTimeout(timer);
       doc.off('update', onUpdate);
       subscribers.clear();
+      // Best-effort: keepalive lets this outlive the unload. If it never lands, presence
+      // still expires on its own — the leave only makes that immediate.
+      api.collabSync(projectId, {
+        client_id: clientId, since, update: null, presence, leave: true,
+      }).catch(() => {});
       doc.destroy();
     },
   };

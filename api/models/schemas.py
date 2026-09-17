@@ -237,6 +237,12 @@ class RejectAccessRequestBody(BaseModel):
     reason: Optional[str] = None
 
 
+# Sharing schemas
+
+class AddMemberRequest(BaseModel):
+    email: EmailStr
+
+
 # Collaboration relay schemas
 #
 # Bodies are base64 Yjs blobs; the caps keep one room inside Firestore's 1 MiB document
@@ -247,6 +253,7 @@ class CollabSyncRequest(BaseModel):
     since: float = 0.0
     update: Optional[str] = Field(None, max_length=200_000)
     presence: Optional[Dict[str, str]] = None
+    leave: bool = False
 
 class CollabSnapshotRequest(BaseModel):
     snapshot: str = Field(..., max_length=700_000)

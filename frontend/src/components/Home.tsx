@@ -3,6 +3,7 @@ import { useSettingsStore } from '../store/settingsStore';
 import { useNavigate } from 'react-router-dom';
 import { MissingImagesDialog } from './editor/MissingImagesDialog';
 import { ConfirmDialog } from './common/ConfirmDialog';
+import { ShareDialog } from './common/ShareDialog';
 import {
   Box,
   Typography,
@@ -41,12 +42,16 @@ import {
   Download,
   ChevronRight,
   FolderOutlined,
+  PersonAdd,
 } from '@mui/icons-material';
 import { api } from '../services/api';
 import { useThemeStore } from '../store/themeStore';
+import { useAuthStore } from '../store/authStore';
 import { ProjectSummary } from '../store/editorStore';
 
 const ACCEPTED_UPLOADS = ['.pdf', '.docx', '.doc'];
+
+const SHARED_GROUP = 'Shared with me';
 
 const TEMPLATES = [
   { id: 'blank', label: 'Blank', icon: Add },
@@ -73,6 +78,7 @@ export function Home() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [menuAnchor, setMenuAnchor] = useState<{ el: HTMLElement; project: ProjectSummary } | null>(null);
+  const [shareProject, setShareProject] = useState<ProjectSummary | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [moveDialog, setMoveDialog] = useState<{ project: ProjectSummary } | null>(null);
   const [deleteDialog, setDeleteDialog] = useState<{ project: ProjectSummary } | null>(null);
@@ -94,7 +100,7 @@ export function Home() {
     try {
       // api.getProjects already maps snake_case to camelCase; re-mapping here silently
       // dropped folder and sortOrder, so folders only survived until the next reload.
-      setProjects(await api.getProjects());
+      setProjects(await api.getProjects(useAuthStore.getState().user?.uid));
     } catch (err: any) {
       setError(err.message || 'Failed to load documents');
     } finally {
@@ -237,7 +243,7 @@ export function Home() {
   const grouped = (() => {
     const byFolder = new Map<string, ProjectSummary[]>();
     for (const p of filteredProjects) {
-      const key = p.folder || '';
+      const key = p.shared ? SHARED_GROUP : (p.folder || '');
       const bucket = byFolder.get(key);
       if (bucket) bucket.push(p); else byFolder.set(key, [p]);
     }
@@ -248,11 +254,17 @@ export function Home() {
         return (new Date(b.updatedAt ?? 0).getTime() || 0) - (new Date(a.updatedAt ?? 0).getTime() || 0);
       });
     }
-    // Root first, then folders alphabetically.
-    return [...byFolder.entries()].sort(([a], [b]) => (a === '' ? -1 : b === '' ? 1 : a.localeCompare(b)));
+    // Root first, then folders alphabetically, with anything shared with me last.
+    return [...byFolder.entries()].sort(([a], [b]) => {
+      if (a === SHARED_GROUP) return 1;
+      if (b === SHARED_GROUP) return -1;
+      return a === '' ? -1 : b === '' ? 1 : a.localeCompare(b);
+    });
   })();
 
-  const folderNames = [...new Set(projects.map((p) => p.folder || '').filter(Boolean))].sort();
+  // Shared projects cannot be dragged into folders: placement is the owner's.
+  const folderNames = [...new Set(projects.filter((p) => !p.shared)
+    .map((p) => p.folder || '').filter(Boolean))].sort();
 
   const applyPlacement = async (id: string, placement: { folder?: string; sort_order?: number }) => {
     // Optimistic: the list reorders immediately, and reloads from the server on failure.
@@ -671,22 +683,38 @@ export function Home() {
           <ContentCopy sx={{ mr: 1.5, fontSize: 14 }} /> Duplicate
         </MenuItem>
         <MenuItem
-          onClick={() => {
-            setMoveDialog({ project: menuAnchor!.project });
-            setNewFolderName('');
-            handleMenuClose();
-          }}
+          onClick={() => { setShareProject(menuAnchor!.project); handleMenuClose(); }}
           sx={{ fontSize: 12 }}
         >
-          <FolderOutlined sx={{ mr: 1.5, fontSize: 14 }} /> Move to folder
+          <PersonAdd sx={{ mr: 1.5, fontSize: 14 }} /> {menuAnchor?.project.shared ? 'People' : 'Share'}
         </MenuItem>
+        {!menuAnchor?.project.shared && (
+          <MenuItem
+            onClick={() => {
+              setMoveDialog({ project: menuAnchor!.project });
+              setNewFolderName('');
+              handleMenuClose();
+            }}
+            sx={{ fontSize: 12 }}
+          >
+            <FolderOutlined sx={{ mr: 1.5, fontSize: 14 }} /> Move to folder
+          </MenuItem>
+        )}
         <MenuItem onClick={() => { api.downloadPdf(menuAnchor!.project.id, menuAnchor!.project.name); handleMenuClose(); }} sx={{ fontSize: 12 }}>
           <Download sx={{ mr: 1.5, fontSize: 14 }} /> Download
         </MenuItem>
-        <MenuItem onClick={handleDelete} sx={{ fontSize: 12, color: 'error.main' }}>
-          <Delete sx={{ mr: 1.5, fontSize: 14 }} /> Delete
-        </MenuItem>
+        {!menuAnchor?.project.shared && (
+          <MenuItem onClick={handleDelete} sx={{ fontSize: 12, color: 'error.main' }}>
+            <Delete sx={{ mr: 1.5, fontSize: 14 }} /> Delete
+          </MenuItem>
+        )}
       </Menu>
+
+      <ShareDialog
+        projectId={shareProject?.id ?? null}
+        projectName={shareProject?.name}
+        onClose={() => { setShareProject(null); loadProjects(); }}
+      />
 
       <Dialog open={Boolean(moveDialog)} onClose={() => setMoveDialog(null)} maxWidth="xs" fullWidth>
         <DialogTitle sx={{ fontSize: 14, fontWeight: 600 }}>

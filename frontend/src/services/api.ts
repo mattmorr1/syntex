@@ -65,6 +65,20 @@ export const api = {
       body: JSON.stringify({ id_token: idToken, invite_code: inviteCode }),
     }),
 
+  getMembers: (id: string) =>
+    request<{
+      members: Array<{ uid: string; role: string; email: string; username: string }>;
+      is_owner: boolean;
+    }>(`/projects/${id}/members`),
+
+  addMember: (id: string, email: string) =>
+    request<{ uid: string; email: string; status: string }>(`/projects/${id}/members`, {
+      method: 'POST', body: JSON.stringify({ email }),
+    }),
+
+  removeMember: (id: string, uid: string) =>
+    request<{ removed: string }>(`/projects/${id}/members/${uid}`, { method: 'DELETE' }),
+
   // Profile for the already-authenticated caller. Login itself happens against Firebase
   // in the browser; the API only ever sees the resulting ID token.
   me: () => request<any>('/auth/me'),
@@ -76,7 +90,7 @@ export const api = {
     }),
 
   // Projects
-  getProjects: async () => {
+  getProjects: async (meUid?: string) => {
     const projects = await request<any[]>('/projects');
     return projects.map(p => ({
       ...p,
@@ -86,6 +100,8 @@ export const api = {
       customTheme: p.custom_theme || p.customTheme,
       folder: p.folder || '',
       sortOrder: p.sort_order ?? 0,
+      ownerUid: p.user_id,
+      shared: Boolean(p.user_id && meUid && p.user_id !== meUid),
     }));
   },
 
@@ -120,13 +136,14 @@ export const api = {
     since: number;
     update: string | null;
     presence: { name: string; color: string };
+    leave?: boolean;
   }) =>
     request<{
       now: number;
       seed: boolean;
       snapshot: string | null;
       updates: string[];
-      peers: Array<{ clientId: number; name?: string; color?: string }>;
+      peers: Array<{ clientId: number; uid?: string; name?: string; color?: string }>;
       pending: number;
     }>(`/projects/${id}/collab/sync`, { method: 'POST', body: JSON.stringify(body) }),
 

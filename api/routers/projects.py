@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, Request
 from typing import Annotated, List, Optional
 import asyncio
 import tempfile
@@ -7,16 +7,19 @@ import re
 import json as json_module
 import zipfile
 import base64
+import html
 import logging
 
 from api.models.schemas import (
     ProjectCreate, ProjectUpdate, ProjectResponse, ProjectSummary, ProjectPlacement,
-    ProjectFile, FeedbackRequest, CollabSyncRequest, CollabSnapshotRequest
+    ProjectFile, FeedbackRequest, CollabSyncRequest, CollabSnapshotRequest,
+    AddMemberRequest
 )
 from api.services.firestore import db_service
 from api.services.gemini import gemini_service, MAX_SOURCE_CHARS
 from api.services.latex import latex_service
-from api.routers.auth import get_current_user
+from api.services.email import send_email
+from api.routers.auth import get_current_user, limiter
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -137,9 +140,12 @@ async def collab_sync(project_id: str, body: CollabSyncRequest,
     if not await db_service.get_project(project_id, user["uid"]):
         raise HTTPException(status_code=404, detail="Project not found")
     presence = dict(body.presence or {})
+    # uid, not just a name: clientID changes on every mount, so without an identity to
+    # collapse on, one person in two tabs reads as two collaborators.
+    presence["uid"] = user["uid"]
     presence["name"] = user.get("username") or user.get("email") or "Anonymous"
     return await db_service.sync_collab_room(
-        project_id, body.client_id, body.since, body.update, presence
+        project_id, body.client_id, body.since, body.update, presence, body.leave
     )
 
 @router.post("/{project_id}/collab/snapshot")
@@ -150,6 +156,71 @@ async def collab_snapshot(project_id: str, body: CollabSnapshotRequest,
         raise HTTPException(status_code=404, detail="Project not found")
     saved = await db_service.save_collab_snapshot(project_id, body.snapshot, body.up_to)
     return {"saved": saved}
+
+@router.get("/{project_id}/members")
+async def list_members(project_id: str, user: dict = Depends(get_current_user)):
+    """Everyone with access to the project, owner first. Visible to owner and members alike."""
+    project = await db_service.get_project(project_id, user["uid"])
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    async def describe(uid: str, role: str) -> dict:
+        account = await db_service.get_user(uid)
+        return {
+            "uid": uid,
+            "role": role,
+            "email": (account or {}).get("email", ""),
+            "username": (account or {}).get("username", ""),
+        }
+
+    owner = await describe(project["user_id"], "owner")
+    members = [await describe(uid, "editor") for uid in (project.get("member_uids") or [])]
+    return {"members": [owner, *members], "is_owner": project["user_id"] == user["uid"]}
+
+@router.post("/{project_id}/members")
+@limiter.limit("20/minute")
+async def add_member(request: Request, project_id: str, body: AddMemberRequest,
+                     user: dict = Depends(get_current_user)):
+    """
+    Share with an existing account. Rate-limited because the response distinguishes a
+    registered address from an unregistered one, which is inherent to sharing by email but
+    should not be free to enumerate.
+    """
+    account = await db_service.get_user_by_email(body.email.lower().strip())
+    if not account:
+        raise HTTPException(
+            status_code=404,
+            detail="No account with that email. Ask them to sign up first, then share.",
+        )
+
+    outcome = await db_service.add_project_member(project_id, user["uid"], account["uid"])
+    if outcome == "not_found":
+        raise HTTPException(status_code=404, detail="Project not found")
+    if outcome == "not_owner":
+        raise HTTPException(status_code=403, detail="Only the owner can share this project")
+
+    if outcome == "ok":
+        project = await db_service.get_project(project_id, user["uid"])
+        sharer = user.get("username") or user.get("email") or "Someone"
+        name = html.escape(project["name"] if project else "a project")
+        await send_email(
+            account["email"],
+            f"{html.escape(sharer)} shared a document with you",
+            f"<p>{html.escape(sharer)} shared <strong>{name}</strong> with you on Syntex.</p>"
+            f"<p><a href=\"{Config.APP_URL}\">Open it</a></p>",
+        )
+    return {"uid": account["uid"], "email": account["email"], "status": outcome}
+
+@router.delete("/{project_id}/members/{member_uid}")
+async def remove_member(project_id: str, member_uid: str,
+                        user: dict = Depends(get_current_user)):
+    """The owner removes anyone; a member removes themselves. The owner is not a member."""
+    outcome = await db_service.remove_project_member(project_id, user["uid"], member_uid)
+    if outcome == "not_found":
+        raise HTTPException(status_code=404, detail="Project not found")
+    if outcome == "forbidden":
+        raise HTTPException(status_code=403, detail="Only the owner can remove other members")
+    return {"removed": member_uid}
 
 @router.patch("/{project_id}/placement")
 async def set_placement(project_id: str, body: ProjectPlacement,

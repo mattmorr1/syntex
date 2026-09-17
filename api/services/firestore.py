@@ -37,6 +37,22 @@ def same_instant(a: Optional[str], b: Optional[str]) -> bool:
         return a == b
 
 
+def can_access(project: Dict, uid: str) -> bool:
+    """
+    Who may open and edit a project: its owner, or anyone the owner shared it with.
+
+    Single-sourced deliberately. The read gate and both mutating transactions each used to
+    compare user_id themselves, so a membership check added to one of them would have left
+    the others closed (feature half-works) or open (hole).
+    """
+    return project.get("user_id") == uid or uid in (project.get("member_uids") or [])
+
+
+def is_owner(project: Dict, uid: str) -> bool:
+    """Kept separate from can_access so "can edit" can never be mistaken for "can destroy"."""
+    return project.get("user_id") == uid
+
+
 def serialize_timestamps(data: Dict) -> Dict:
     """Convert Firestore Timestamps to ISO strings for JSON serialization"""
     result = {}
@@ -421,11 +437,11 @@ class FirestoreService:
             doc = self.db.collection("projects").document(project_id).get()
             if doc.exists:
                 data = serialize_timestamps(doc.to_dict())
-                if data.get("user_id") == uid:
+                if can_access(data, uid):
                     return {"id": project_id, **data}
             return None
         project = self._dev_data["projects"].get(project_id)
-        if project and project.get("user_id") == uid:
+        if project and can_access(project, uid):
             return {"id": project_id, **serialize_timestamps(project)}
         return None
     
@@ -433,17 +449,22 @@ class FirestoreService:
     def get_user_projects(self, uid: str) -> List[Dict]:
         self._ensure_initialized()
         if self.enabled:
-            projects = []
             # Field mask: the listing never renders file bodies, and they dominate doc size.
-            query = (self.db.collection("projects").where("user_id", "==", uid)
-                     .select(["name", "main_file", "theme", "custom_theme",
-                              "folder", "sort_order", "created_at", "updated_at"]))
-            for doc in query.stream():
-                data = serialize_timestamps(doc.to_dict())
-                projects.append({"id": doc.id, **data})
-            return projects
-        return [{"id": pid, **serialize_timestamps(p)} for pid, p in self._dev_data["projects"].items() 
-                if p.get("user_id") == uid]
+            # user_id is in the mask because the client needs it to tell owned from shared.
+            mask = ["user_id", "name", "main_file", "theme", "custom_theme",
+                    "folder", "sort_order", "created_at", "updated_at"]
+            col = self.db.collection("projects")
+            # Two queries rather than one: Firestore cannot answer "owner OR member" in a
+            # single index scan. The owner is never in member_uids, so overlap is not
+            # expected, but the dict keyed by id makes a duplicate impossible anyway.
+            found: Dict[str, Dict] = {}
+            for query in (col.where("user_id", "==", uid).select(mask),
+                          col.where("member_uids", "array_contains", uid).select(mask)):
+                for doc in query.stream():
+                    found[doc.id] = {"id": doc.id, **serialize_timestamps(doc.to_dict())}
+            return list(found.values())
+        return [{"id": pid, **serialize_timestamps(p)} for pid, p in self._dev_data["projects"].items()
+                if can_access(p, uid)]
     
     @offload
     def update_project(self, project_id: str, uid: str, files: List[Dict],
@@ -458,7 +479,7 @@ class FirestoreService:
 
         if not self.enabled:
             p = self._dev_data["projects"].get(project_id)
-            if not p or p.get("user_id") != uid:
+            if not p or not can_access(p, uid):
                 return {"ok": False, "reason": "not_found"}
             if base_updated_at:
                 stored = serialize_timestamps(p).get("updated_at")
@@ -472,7 +493,7 @@ class FirestoreService:
         @firestore.transactional
         def _apply(transaction) -> Dict:
             snap = ref.get(transaction=transaction)
-            if not snap.exists or snap.to_dict().get("user_id") != uid:
+            if not snap.exists or not can_access(snap.to_dict(), uid):
                 return {"ok": False, "reason": "not_found"}
             if base_updated_at:
                 stored = serialize_timestamps(snap.to_dict()).get("updated_at")
@@ -486,7 +507,8 @@ class FirestoreService:
     async def update_project_name(self, project_id: str, uid: str, name: str) -> bool:
         self._ensure_initialized()
         project = await self.get_project(project_id, uid)
-        if not project:
+        # get_project admits members; renaming is the owner's alone.
+        if not project or not is_owner(project, uid):
             return False
             
         if self.enabled:
@@ -515,7 +537,7 @@ class FirestoreService:
 
         if not self.enabled:
             p = self._dev_data["projects"].get(project_id)
-            if not p or p.get("user_id") != uid:
+            if not p or not is_owner(p, uid):
                 return False
             p.update(update)
             return True
@@ -525,7 +547,7 @@ class FirestoreService:
         @firestore.transactional
         def _apply(transaction) -> bool:
             snap = ref.get(transaction=transaction)
-            if not snap.exists or snap.to_dict().get("user_id") != uid:
+            if not snap.exists or not is_owner(snap.to_dict(), uid):
                 return False
             transaction.update(ref, update)
             return True
@@ -535,7 +557,8 @@ class FirestoreService:
     async def delete_project(self, project_id: str, uid: str) -> bool:
         self._ensure_initialized()
         project = await self.get_project(project_id, uid)
-        if not project:
+        # A member losing access must not be able to destroy the document on the way out.
+        if not project or not is_owner(project, uid):
             return False
             
         if self.enabled:
@@ -559,6 +582,80 @@ class FirestoreService:
             custom_theme=project.get("custom_theme")
         )
     
+    # Membership
+    #
+    # These are the only writers of member_uids. No generic project path touches it:
+    # update_project writes files, update_project_name writes name, set_project_placement
+    # writes folder and sort_order — so a member cannot widen their own access.
+
+    @offload
+    def add_project_member(self, project_id: str, owner_uid: str, member_uid: str) -> str:
+        """Returns "ok", "not_owner", "not_found", or "is_owner" (a no-op, not an error)."""
+        self._ensure_initialized()
+
+        if not self.enabled:
+            p = self._dev_data["projects"].get(project_id)
+            if not p:
+                return "not_found"
+            if not is_owner(p, owner_uid):
+                return "not_owner"
+            if member_uid == p.get("user_id"):
+                return "is_owner"
+            members = p.setdefault("member_uids", [])
+            if member_uid not in members:
+                members.append(member_uid)
+            return "ok"
+
+        ref = self.db.collection("projects").document(project_id)
+
+        @firestore.transactional
+        def _apply(transaction) -> str:
+            snap = ref.get(transaction=transaction)
+            if not snap.exists:
+                return "not_found"
+            data = snap.to_dict()
+            if not is_owner(data, owner_uid):
+                return "not_owner"
+            if member_uid == data.get("user_id"):
+                return "is_owner"
+            # ArrayUnion rather than read-modify-write: two concurrent shares must not
+            # clobber one another.
+            transaction.update(ref, {"member_uids": firestore.ArrayUnion([member_uid])})
+            return "ok"
+
+        return _apply(self.db.transaction())
+
+    @offload
+    def remove_project_member(self, project_id: str, actor_uid: str, member_uid: str) -> str:
+        """The owner may remove anyone; a member may remove only themselves."""
+        self._ensure_initialized()
+
+        def permitted(data: Dict) -> bool:
+            return is_owner(data, actor_uid) or actor_uid == member_uid
+
+        if not self.enabled:
+            p = self._dev_data["projects"].get(project_id)
+            if not p:
+                return "not_found"
+            if not permitted(p):
+                return "forbidden"
+            p["member_uids"] = [m for m in (p.get("member_uids") or []) if m != member_uid]
+            return "ok"
+
+        ref = self.db.collection("projects").document(project_id)
+
+        @firestore.transactional
+        def _apply(transaction) -> str:
+            snap = ref.get(transaction=transaction)
+            if not snap.exists:
+                return "not_found"
+            if not permitted(snap.to_dict()):
+                return "forbidden"
+            transaction.update(ref, {"member_uids": firestore.ArrayRemove([member_uid])})
+            return "ok"
+
+        return _apply(self.db.transaction())
+
     # Chat operations
     @offload
     def save_chat(self, uid: str, project_id: str, messages: List[Dict]) -> str:
@@ -758,13 +855,15 @@ class FirestoreService:
 
     @offload
     def sync_collab_room(self, project_id: str, client_id: int, since: float,
-                         update: Optional[str], presence: Optional[Dict]) -> Dict[str, Any]:
+                         update: Optional[str], presence: Optional[Dict],
+                         leave: bool = False) -> Dict[str, Any]:
         self._ensure_initialized()
         now = datetime.now(timezone.utc).timestamp()
         if not self.enabled:
             rooms = self._dev_data.setdefault("collab", {})
             room = rooms.get(project_id) or {}
-            result, room = self._advance_collab_room(room, now, client_id, since, update, presence)
+            result, room = self._advance_collab_room(room, now, client_id, since, update,
+                                                     presence, leave)
             rooms[project_id] = room
             return result
 
@@ -774,14 +873,16 @@ class FirestoreService:
         def commit(transaction):
             doc = ref.get(transaction=transaction)
             room = doc.to_dict() if doc.exists else {}
-            result, room = self._advance_collab_room(room, now, client_id, since, update, presence)
+            result, room = self._advance_collab_room(room, now, client_id, since, update,
+                                                     presence, leave)
             transaction.set(ref, room)
             return result
 
         return commit(self.db.transaction())
 
     def _advance_collab_room(self, room: Dict, now: float, client_id: int, since: float,
-                             update: Optional[str], presence: Optional[Dict]) -> tuple:
+                             update: Optional[str], presence: Optional[Dict],
+                             leave: bool = False) -> tuple:
         """Pure room transition. Returns (response, next_room) so it is testable alone."""
         # Reset on a room nobody has touched lately, which must count this client's own
         # earlier heartbeat: judging by other peers alone would reset on every tick of a
@@ -798,7 +899,9 @@ class FirestoreService:
         if update:
             deltas.append({"ts": now, "data": update})
 
-        peers[str(client_id)] = {"ts": now, **(presence or {})}
+        # A leaving client drops out now rather than ghosting until its TTL expires.
+        if not leave:
+            peers[str(client_id)] = {"ts": now, **(presence or {})}
         next_room = {"presence": peers, "deltas": deltas,
                      "snapshot": snapshot, "snapshot_ts": snapshot_ts}
 

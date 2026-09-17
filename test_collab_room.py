@@ -61,6 +61,25 @@ def test_joiner_receives_what_a_solo_client_typed():
     assert res["seed"] is False and res["updates"] == ["SEED"]
 
 
+def test_leaving_drops_presence_immediately():
+    _, room = advance(None, {}, 1000.0, 7, 0.0, None, {"uid": "u1", "name": "a"})
+    _, room = advance(None, room, 1001.0, 8, 0.0, None, {"uid": "u2", "name": "b"})
+    _, room = advance(None, room, 1002.0, 8, 1001.0, None, {"uid": "u2"}, True)
+    assert "8" not in room["presence"], "a leaver must not ghost until its TTL"
+    res, _ = advance(None, room, 1003.0, 7, 1002.0, None, {"uid": "u1", "name": "a"})
+    assert res["peers"] == []
+
+
+def test_presence_carries_uid_for_collapsing_tabs():
+    # Two mounts of one account: distinct client ids, same uid, so the client can show one.
+    _, room = advance(None, {}, 1000.0, 7, 0.0, None, {"uid": "u1", "name": "a"})
+    _, room = advance(None, room, 1001.0, 8, 0.0, None, {"uid": "u1", "name": "a"})
+    res, _ = advance(None, room, 1002.0, 9, 0.0, None, {"uid": "u2", "name": "b"})
+    uids = [p["uid"] for p in res["peers"]]
+    assert uids == ["u1", "u1"], "the server reports instances; collapsing is the client's job"
+    assert len(set(uids)) == 1
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):
