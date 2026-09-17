@@ -6,10 +6,21 @@ from datetime import datetime
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+import logging
 import os
 import sys
 
 from config import Config
+
+# Without this the root logger has no handler, so every logger.error/warning in the app is
+# dropped and only uvicorn's access lines reach Cloud Logging — which hid a failing email
+# send entirely. force=True because uvicorn configures logging before this runs.
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(levelname)s %(name)s %(message)s",
+    stream=sys.stdout,
+    force=True,
+)
 
 print(f"Starting syntex...")
 print(f"Python path: {sys.path}")
