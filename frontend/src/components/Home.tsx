@@ -46,6 +46,8 @@ import { api } from '../services/api';
 import { useThemeStore } from '../store/themeStore';
 import { ProjectSummary } from '../store/editorStore';
 
+const ACCEPTED_UPLOADS = ['.pdf', '.docx', '.doc'];
+
 const TEMPLATES = [
   { id: 'blank', label: 'Blank', icon: Add },
   { id: 'report', label: 'Report', icon: Description },
@@ -116,20 +118,24 @@ export function Home() {
     setDragActive(false);
 
     const droppedFile = e.dataTransfer.files?.[0];
-    if (droppedFile && (droppedFile.name.endsWith('.docx') || droppedFile.name.endsWith('.doc'))) {
+    if (droppedFile && ACCEPTED_UPLOADS.some(ext => droppedFile.name.toLowerCase().endsWith(ext))) {
       setFile(droppedFile);
       setError('');
     } else {
-      setError('Please upload a .docx or .doc file');
+      setError('Please upload a .pdf, .docx or .doc file');
     }
   }, []);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0];
-    if (selectedFile) {
-      setFile(selectedFile);
-      setError('');
+    if (!selectedFile) return;
+    // Same check as the drop handler: browsing used to accept anything at all.
+    if (!ACCEPTED_UPLOADS.some(ext => selectedFile.name.toLowerCase().endsWith(ext))) {
+      setError('Please upload a .pdf, .docx or .doc file');
+      return;
     }
+    setFile(selectedFile);
+    setError('');
   };
 
   const handleClsSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -157,11 +163,16 @@ export function Home() {
       setUploadProgress(100);
       clearInterval(progressInterval);
 
+      // Carried into the editor rather than shown here, which unmounts on navigate.
+      const warning = result.truncated
+        ? `Only the first ${Math.round(result.source_chars_used / 1000)}k characters of the source were converted.`
+        : undefined;
+
       if (result.missing_images && result.missing_images.length > 0) {
         setMissingImagesDialog({ projectId: result.project_id, images: result.missing_images });
         setUploading(false);
       } else {
-        navigate(`/editor/${result.project_id}`);
+        navigate(`/editor/${result.project_id}`, warning ? { state: { warning } } : undefined);
       }
     } catch (err: any) {
       setError(err.message || 'Upload failed');
@@ -382,7 +393,7 @@ export function Home() {
               <input
                 id="file-input"
                 type="file"
-                accept=".doc,.docx"
+                accept=".pdf,.doc,.docx"
                 onChange={handleFileSelect}
                 style={{ display: 'none' }}
               />

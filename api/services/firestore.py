@@ -9,6 +9,11 @@ from firebase_admin import credentials, firestore, auth
 from config import Config
 
 
+PRESENCE_TTL_SECONDS = 90.0
+DELTA_TTL_SECONDS = 120.0
+SYNC_OVERLAP_SECONDS = 2.0
+
+
 def offload(fn):
     """Run a blocking Firestore method body in a worker thread, off the event loop."""
     @functools.wraps(fn)
@@ -737,5 +742,109 @@ class FirestoreService:
             self._dev_data["invites"][code]["active"] = False
             return True
         return False
+
+    # Collaboration relay
+    #
+    # One document per project holds a snapshot plus a short tail of deltas. Yjs updates
+    # are commutative and idempotent, so at-least-once delivery is enough and the poll
+    # window overlaps rather than demanding exact ordering.
+    #
+    # The room resets whenever no peer has been seen for PRESENCE_TTL: durable content
+    # lives in the project files via the normal save path, so an empty room has nothing
+    # worth keeping and the next joiner reseeds from those files. That also stops a stale
+    # snapshot outliving solo edits made elsewhere.
+    # ponytail: one doc per room, so sustained writes past ~1/s contend. Shard deltas into
+    # a subcollection if that shows up in practice.
+
+    @offload
+    def sync_collab_room(self, project_id: str, client_id: int, since: float,
+                         update: Optional[str], presence: Optional[Dict]) -> Dict[str, Any]:
+        self._ensure_initialized()
+        now = datetime.now(timezone.utc).timestamp()
+        if not self.enabled:
+            rooms = self._dev_data.setdefault("collab", {})
+            room = rooms.get(project_id) or {}
+            result, room = self._advance_collab_room(room, now, client_id, since, update, presence)
+            rooms[project_id] = room
+            return result
+
+        ref = self.db.collection("collab_rooms").document(project_id)
+
+        @firestore.transactional
+        def commit(transaction):
+            doc = ref.get(transaction=transaction)
+            room = doc.to_dict() if doc.exists else {}
+            result, room = self._advance_collab_room(room, now, client_id, since, update, presence)
+            transaction.set(ref, room)
+            return result
+
+        return commit(self.db.transaction())
+
+    def _advance_collab_room(self, room: Dict, now: float, client_id: int, since: float,
+                             update: Optional[str], presence: Optional[Dict]) -> tuple:
+        """Pure room transition. Returns (response, next_room) so it is testable alone."""
+        # Reset on a room nobody has touched lately, which must count this client's own
+        # earlier heartbeat: judging by other peers alone would reset on every tick of a
+        # solo session, wiping the state the next joiner needs.
+        live = {k: v for k, v in (room.get("presence") or {}).items()
+                if now - v.get("ts", 0) < PRESENCE_TTL_SECONDS}
+        reset = not live
+        peers = {k: v for k, v in live.items() if k != str(client_id)}
+        deltas = [] if reset else [d for d in (room.get("deltas") or [])
+                                   if now - d.get("ts", 0) < DELTA_TTL_SECONDS]
+        snapshot = None if reset else room.get("snapshot")
+        snapshot_ts = 0.0 if reset else room.get("snapshot_ts", 0.0)
+
+        if update:
+            deltas.append({"ts": now, "data": update})
+
+        peers[str(client_id)] = {"ts": now, **(presence or {})}
+        next_room = {"presence": peers, "deltas": deltas,
+                     "snapshot": snapshot, "snapshot_ts": snapshot_ts}
+
+        fresh = reset or since <= 0
+        cutoff = since - SYNC_OVERLAP_SECONDS
+        return {
+            "now": now,
+            "seed": reset,
+            "snapshot": snapshot if fresh else None,
+            "updates": [d["data"] for d in deltas
+                        if d["ts"] > (snapshot_ts if fresh else cutoff)
+                        and not (d["ts"] == now and update and d["data"] == update)],
+            "peers": [{"clientId": int(k), **{f: v for f, v in p.items() if f != "ts"}}
+                      for k, p in peers.items() if k != str(client_id)],
+            "pending": len(deltas),
+        }, next_room
+
+    @offload
+    def save_collab_snapshot(self, project_id: str, snapshot: str, up_to: float) -> bool:
+        """Fold deltas up to `up_to` into a snapshot. Callers hold the merged doc; we only store it."""
+        self._ensure_initialized()
+        if not self.enabled:
+            room = self._dev_data.setdefault("collab", {}).get(project_id)
+            if room is None:
+                return False
+            room["snapshot"] = snapshot
+            room["snapshot_ts"] = up_to
+            room["deltas"] = [d for d in room.get("deltas", []) if d.get("ts", 0) > up_to]
+            return True
+
+        ref = self.db.collection("collab_rooms").document(project_id)
+
+        @firestore.transactional
+        def commit(transaction):
+            doc = ref.get(transaction=transaction)
+            if not doc.exists:
+                return False
+            room = doc.to_dict()
+            if room.get("snapshot_ts", 0.0) >= up_to:
+                return True
+            room["snapshot"] = snapshot
+            room["snapshot_ts"] = up_to
+            room["deltas"] = [d for d in room.get("deltas", []) if d.get("ts", 0) > up_to]
+            transaction.set(ref, room)
+            return True
+
+        return commit(self.db.transaction())
 
 db_service = FirestoreService()

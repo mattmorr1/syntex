@@ -235,3 +235,19 @@ class AccessRequestResponse(BaseModel):
 
 class RejectAccessRequestBody(BaseModel):
     reason: Optional[str] = None
+
+
+# Collaboration relay schemas
+#
+# Bodies are base64 Yjs blobs; the caps keep one room inside Firestore's 1 MiB document
+# limit and stop a client from parking arbitrary data in someone else's project.
+
+class CollabSyncRequest(BaseModel):
+    client_id: int
+    since: float = 0.0
+    update: Optional[str] = Field(None, max_length=200_000)
+    presence: Optional[Dict[str, str]] = None
+
+class CollabSnapshotRequest(BaseModel):
+    snapshot: str = Field(..., max_length=700_000)
+    up_to: float

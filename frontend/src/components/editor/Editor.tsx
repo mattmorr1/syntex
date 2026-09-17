@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import SyntexLogo from '../common/SyntexLogo';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import {
   Box,
   IconButton,
@@ -47,7 +47,7 @@ import { MonacoEditor, MonacoEditorHandle, EditorSelection, CompileError } from 
 import { AgentPanel } from '../ai/AgentPanel';
 import { PdfViewer, type PdfViewerHandle } from './PdfViewer';
 import { ConfirmDialog } from '../common/ConfirmDialog';
-import { joinProject, peers, collabEnabled, type CollabSession, type Collaborator } from '../../services/collab';
+import { joinProject, collabEnabled, type CollabSession, type Collaborator } from '../../services/collab';
 
 /** Parse LaTeX log output into line-number + message pairs for Monaco markers. */
 function parseLatexErrors(errorLog: string | null): CompileError[] {
@@ -85,6 +85,7 @@ const FILE_ICONS: Record<string, React.ReactNode> = {
 export function Editor() {
   const { projectId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const { mode } = useThemeStore();
   const { aiModel } = useSettingsStore();
   const { user } = useAuth();
@@ -112,7 +113,7 @@ export function Editor() {
   const [loading, setLoading] = useState(true);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
-  const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: 'success' | 'error' }>({
+  const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: 'success' | 'error' | 'warning' }>({
     open: false,
     message: '',
     severity: 'success',
@@ -152,37 +153,38 @@ export function Editor() {
     if (projectId) loadProject(projectId);
   }, [projectId]);
 
+  // Upload warnings (e.g. a truncated source) are raised on Home but only readable here,
+  // once the editor it navigated to has mounted.
+  useEffect(() => {
+    const warning = (location.state as { warning?: string } | null)?.warning;
+    if (warning) {
+      setSnackbar({ open: true, message: warning, severity: 'warning' });
+      navigate(location.pathname, { replace: true, state: null });
+    }
+  }, [location.pathname, location.state, navigate]);
+
   useEffect(() => {
     if (!collabEnabled || !currentProject?.id) return;
-    const projectId = currentProject.id;
-    let session: CollabSession | null = null;
-    let cancelled = false;
-    let sync: (() => void) | undefined;
-
-    (async () => {
-      let token: string;
-      try {
-        ({ token } = await api.collabToken(projectId));
-      } catch {
-        // No admission to the room: the document still opens, just not shared.
-        return;
-      }
-      if (cancelled) return;
-      session = joinProject(projectId, { name: user?.username || user?.email || 'Anonymous' }, token);
-      if (!session) return;
-      setCollab(session);
-      collabRef.current = session;
-      sync = () => setCollaborators(peers(session!.provider));
-      session.provider.awareness.on('change', sync);
-      sync();
-    })();
+    const files = currentProject.files || [];
+    const session = joinProject(
+      currentProject.id,
+      { name: user?.username || user?.email || 'Anonymous' },
+      (doc) => {
+        // First into an empty room: plant the saved contents so later joiners replay
+        // them rather than each inserting their own copy of the same text.
+        files.forEach((f: any) => {
+          const text = doc.getText(`file:${f.name}`);
+          if (text.length === 0) text.insert(0, f.content || '');
+        });
+      },
+    );
+    setCollab(session);
+    collabRef.current = session;
+    const off = session.onPeers(setCollaborators);
 
     return () => {
-      cancelled = true;
-      if (session) {
-        if (sync) session.provider.awareness.off('change', sync);
-        session.destroy();
-      }
+      off();
+      session.destroy();
       collabRef.current = null;
       setCollab(null);
       setCollaborators([]);

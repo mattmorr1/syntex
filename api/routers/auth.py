@@ -77,14 +77,14 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
             await db_service.update_last_accessed(decoded["uid"])
             return user
         return {"uid": decoded["uid"], "email": decoded.get("email", ""), "role": "user"}
-    except auth.InvalidIdTokenError:
-        logger.warning("Invalid Firebase ID token presented")
-        raise HTTPException(status_code=401, detail="Invalid token")
     except auth.ExpiredIdTokenError:
         logger.info("Expired Firebase ID token presented")
         raise HTTPException(status_code=401, detail="Token expired")
     except Exception:
-        # Not a Firebase token — try local JWT (for admin login)
+        # Anything else means it is not a Firebase ID token — including
+        # InvalidIdTokenError, which is what a locally-signed admin JWT raises ("no kid
+        # claim"). Catching that as a hard 401 made the fallback below unreachable for the
+        # only tokens it exists to serve.
         try:
             payload = verify_jwt_token(token)
             uid = payload["sub"]
@@ -146,34 +146,12 @@ async def login(request: Request, body: LoginRequest):
             )
         )
 
-    try:
-        user_record = auth.get_user_by_email(body.email)
-        user = await db_service.get_user(user_record.uid)
-
-        if not user:
-            user = await db_service.create_user(
-                uid=user_record.uid,
-                email=body.email,
-                username=body.email.split("@")[0]
-            )
-
-        custom_token = auth.create_custom_token(user_record.uid)
-
-        return AuthResponse(
-            token=custom_token.decode() if isinstance(custom_token, bytes) else custom_token,
-            user=UserResponse(
-                uid=user["uid"],
-                email=user["email"],
-                username=user["username"],
-                role=user.get("role", "user"),
-                tokensUsed=TokenUsage(**user.get("tokens_used", {}))
-            )
-        )
-    except auth.UserNotFoundError:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    except Exception as e:
-        logger.error(f"Login error: {e}")
-        raise HTTPException(status_code=401, detail="Login failed")
+    # Everyone else authenticates against Firebase in the browser and presents the
+    # resulting ID token; the profile then comes from /auth/me. Nothing here can check a
+    # password -- the Admin SDK has no such call -- so there is nothing to issue a token
+    # against, and minting one on an email lookup alone would admit anyone who knows an
+    # address.
+    raise HTTPException(status_code=401, detail="Invalid credentials")
 
 
 @router.post("/register", response_model=AuthResponse)

@@ -13,12 +13,15 @@ from config import Config
 logger = logging.getLogger(__name__)
 
 # Gemini models
-FLASH_MODEL = os.getenv("GEMINI_FLASH_MODEL", "gemini-3.0-flash-preview")
+FLASH_MODEL = os.getenv("GEMINI_FLASH_MODEL", "gemini-3.8-flash")
 PRO_MODEL = os.getenv("GEMINI_PRO_MODEL", "gemini-3.1-pro-preview")
 # Concurrent section fills. Unbounded fan-out on a long paper collected 429s, which the
 # TokenLimitError path then turned into silently truncated sections.
 SECTION_CONCURRENCY = int(os.getenv("SECTION_CONCURRENCY", "4"))
 GEMINI_MAX_RETRIES = int(os.getenv("GEMINI_MAX_RETRIES", "4"))
+# Roughly 20 pages of academic text. Named so callers can warn on the same number rather
+# than silently dropping the tail of a long paper.
+MAX_SOURCE_CHARS = int(os.getenv("MAX_SOURCE_CHARS", "40000"))
 
 class TokenLimitError(Exception):
     """Raised when response is truncated due to max_tokens limit."""
@@ -200,26 +203,31 @@ class GeminiService:
 
     async def _create_cached_content(
         self,
-        content: str,
+        parts: List[Dict],
         model: str,
         api_key: str,
+        fingerprint: str,
         display_name: str = "document_cache"
     ) -> Optional[str]:
-        """Create a cached content object in Gemini API."""
-        # Only cache if content is substantial (>2000 chars)
-        if len(content) < 2000:
-            return None
+        """
+        Cache a set of content parts server-side and return its name, or None if the API
+        declines. Takes parts rather than text so the cache can hold an inline PDF, which is
+        the whole point: the source is uploaded once and every section fill references it.
 
-        # Check cache first
-        cached = await self.prompt_cache.get(content, model)
+        Caching has a minimum token floor, so a short source will legitimately fail here.
+        Callers must treat None as "send it inline or go without", never as an error.
+        """
+        cached = await self.prompt_cache.get(fingerprint, model)
         if cached:
             return cached
 
         url = f"{self.gemini_base_url}/cachedContents"
         payload = {
             "model": f"models/{model}",
-            "contents": [{"role": "user", "parts": [{"text": content}]}],
-            "displayName": display_name
+            "contents": [{"role": "user", "parts": parts}],
+            "displayName": display_name,
+            # Matches the local TTL, so a name we hand back is still live on their side.
+            "ttl": f"{self.prompt_cache.ttl_seconds}s",
         }
         try:
             client = await self._get_client()
@@ -229,8 +237,11 @@ class GeminiService:
             if response.status_code == 200:
                 cache_name = response.json().get("name")
                 if cache_name:
-                    await self.prompt_cache.set(content, model, cache_name)
+                    await self.prompt_cache.set(fingerprint, model, cache_name)
                     return cache_name
+            else:
+                logger.info("Content caching declined (%s): %.200s",
+                            response.status_code, response.text)
         except Exception as e:
             logger.warning("Cache creation failed: %s", e)
         
@@ -260,7 +271,8 @@ class GeminiService:
         api_key: Optional[str] = None,
         images: Optional[List[str]] = None,
         response_schema: Optional[Dict] = None,
-        cached_content: Optional[str] = None
+        cached_content: Optional[str] = None,
+        thinking_level: Optional[str] = None
     ) -> Tuple[str, int]:
         key = self.get_api_key(api_key)
         if not key:
@@ -280,6 +292,12 @@ class GeminiService:
             "maxOutputTokens": max_tokens,
         }
 
+        # Measured on this key: flash spends 0 thinking tokens at "low" and ~477 at "high";
+        # pro 355 and 710. Worth it where one call decides the shape of everything after it,
+        # wasteful on transcription under a fixed schema.
+        if thinking_level:
+            gen_config["thinkingConfig"] = {"thinkingLevel": thinking_level}
+
         # Add structured output if schema provided
         if response_schema:
             gen_config["responseMimeType"] = "application/json"
@@ -294,6 +312,7 @@ class GeminiService:
                 {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
                 {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
                 {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_CIVIC_INTEGRITY", "threshold": "BLOCK_NONE"},
             ]
         }
 
@@ -364,12 +383,13 @@ class GeminiService:
         images: Optional[List[str]] = None,
         response_schema: Optional[Dict] = None,
         cached_content: Optional[str] = None,
+        thinking_level: Optional[str] = None,
     ) -> Tuple[str, int]:
         if not self.gemini_api_key and not api_key:
             return self._dev_response(prompt), 0
         return await self._call_gemini_api(
             model, prompt, temperature, max_tokens,
-            api_key, images, response_schema, cached_content
+            api_key, images, response_schema, cached_content, thinking_level
         )
 
     def _dev_response(self, prompt: str) -> str:
@@ -434,7 +454,8 @@ Provide a SINGLE short completion (1-2 lines max) that would logically follow.
 Return ONLY the completion text, nothing else. No explanations."""
 
         try:
-            text, tokens = await self._call_api(FLASH_MODEL, prompt, temperature=0.1, max_tokens=100, api_key=api_key)
+            text, tokens = await self._call_api(FLASH_MODEL, prompt, temperature=0.1, max_tokens=100,
+                                                api_key=api_key, thinking_level="low")
         except TokenLimitError as e:
             # Partial text is still a usable completion suggestion
             return e.partial_text.strip(), e.tokens
@@ -509,9 +530,10 @@ Return ONLY the completion text, nothing else. No explanations."""
                         "heading": {"type": "string"},
                         "placeholder": {"type": "string"},
                         "anchor": {"type": "string"},
+                        "figures": {"type": "array", "items": {"type": "string"}},
                     },
-                    "required": ["heading", "placeholder", "anchor"],
-                    "propertyOrdering": ["heading", "placeholder", "anchor"],
+                    "required": ["heading", "placeholder", "anchor", "figures"],
+                    "propertyOrdering": ["heading", "placeholder", "anchor", "figures"],
                 },
             },
             "postamble": {"type": "string"},
@@ -522,12 +544,33 @@ Return ONLY the completion text, nothing else. No explanations."""
 
     async def _generate_structure(
         self, content: str, theme_desc: str, cls_instruction: str,
-        custom_preamble: str, api_key: Optional[str]
+        custom_preamble: str, api_key: Optional[str],
+        figure_names: Optional[List[str]] = None,
+        source_pdf: Optional[str] = None
     ) -> Optional[Dict]:
         """
         Pass 1: Flash generates the LaTeX skeleton — preamble, section list with verbatim
         source anchors, and postamble. Returns parsed dict or None on failure.
         """
+        # Figures already exist on disk under these names; the model assigns them rather
+        # than inventing filenames the project has no file for.
+        figures_rule = (
+            "- figures: for each section, the subset of these figure files that belongs in "
+            f"it, in order: {', '.join(figure_names)}. Use each file in exactly one section, "
+            "matching where the source refers to it. Sections with no figure get an empty "
+            "array. Do not invent filenames.\n"
+        ) if figure_names else (
+            "- figures: always an empty array (no figures were supplied).\n"
+        )
+
+        # With the PDF attached the text below is still what anchors resolve against, so it
+        # must stay the reference for anchor text even though the PDF is the better read.
+        pdf_note = (
+            "\nThe original PDF is attached. Read structure and figure placement from it, "
+            "but copy anchors verbatim from the SOURCE PAPER text below, which is what the "
+            "anchors are matched against.\n"
+        ) if source_pdf else ""
+
         prompt = (
             f"You are a LaTeX document architect. Analyse the academic paper below "
             f"and produce a JSON document skeleton using {theme_desc} style.\n\n"
@@ -545,17 +588,21 @@ Return ONLY the completion text, nothing else. No explanations."""
             "can see in the source — do not paraphrase, renumber, or reformat it. Do NOT report "
             "character offsets or positions.\n"
             "- postamble: \\printbibliography + \\end{document} (use biblatex, NOT \\bibliographystyle or \\bibliography)\n"
+            f"{figures_rule}"
             f"{cls_instruction}"
             f"{('Extra preamble: ' + custom_preamble + chr(10)) if custom_preamble else ''}"
+            f"{pdf_note}"
             "\nSOURCE PAPER:\n"
-            f"{content[:40000]}\n\n"
+            f"{content[:MAX_SOURCE_CHARS]}\n\n"
             "Return ONLY the JSON object."
         )
         try:
             text, _ = await self._call_api(
                 FLASH_MODEL, prompt, temperature=0.1,
                 max_tokens=32768, api_key=api_key,
-                response_schema=self._STRUCTURE_SCHEMA
+                images=[source_pdf] if source_pdf else None,
+                response_schema=self._STRUCTURE_SCHEMA,
+                thinking_level="high"
             )
             return json.loads(text)
         except TokenLimitError as e:
@@ -569,7 +616,9 @@ Return ONLY the completion text, nothing else. No explanations."""
     async def _fill_section(
         self, section_text: str, heading: str, preamble: str,
         inventory: str, theme_desc: str, cls_instruction: str,
-        api_key: Optional[str], max_tokens: int
+        api_key: Optional[str], max_tokens: int,
+        images: Optional[List[str]] = None, figure_names: Optional[List[str]] = None,
+        cached_content: Optional[str] = None
     ) -> Tuple[str, int]:
         """
         Pass 2: Pro fills one section with full token budget.
@@ -579,6 +628,13 @@ Return ONLY the completion text, nothing else. No explanations."""
             "CONTENT CHECKLIST for this section (all items MUST appear):\n"
             f"{inventory}\n\n"
         ) if inventory else ""
+
+        # The files are already saved under these names, so \includegraphics must use them
+        # verbatim; an invented name resolves to nothing at compile time.
+        figures_block = (
+            "FIGURES for this section — include each in a figure environment with a caption, "
+            f"using exactly these filenames: {', '.join(figure_names)}\n\n"
+        ) if figure_names else ""
 
         prompt = (
             f"You are a LaTeX typesetter filling the '{heading}' section of a document.\n\n"
@@ -598,6 +654,8 @@ Return ONLY the completion text, nothing else. No explanations."""
             "- Use \\cite{key} for citations (biblatex). Do NOT use \\t for indentation — just start text directly.\n\n"
             f"{cls_instruction}"
             f"{inventory_block}"
+            f"{figures_block}"
+            f"{source_note}"
             f"PREAMBLE CONTEXT (for package awareness — do not repeat):\n{preamble[:1500]}\n\n"
             f"SOURCE TEXT FOR THIS SECTION:\n{section_text}\n\n"
             "BEGIN LATEX SECTION OUTPUT NOW:\n"
@@ -605,7 +663,8 @@ Return ONLY the completion text, nothing else. No explanations."""
         try:
             text, tokens = await self._call_api(
                 PRO_MODEL, prompt, temperature=0.15,
-                max_tokens=max_tokens, api_key=api_key
+                max_tokens=max_tokens, api_key=api_key, images=images,
+                cached_content=cached_content, thinking_level="low"
             )
         except TokenLimitError as e:
             # Partial section content is better than a missing section
@@ -666,6 +725,11 @@ Return ONLY the completion text, nothing else. No explanations."""
         return content[:800].strip()
 
     @staticmethod
+    def _section_figures(section: Dict, by_name: Dict[str, str]) -> List[str]:
+        """Figures the structure pass assigned to this section, minus any it invented."""
+        return [n for n in (section.get("figures") or []) if n in by_name]
+
+    @staticmethod
     def _locate_sections(content: str, sections: List[Dict]) -> Tuple[List[Tuple[int, int]], int]:
         """
         Resolve each section's verbatim anchor to a source offset. Searching is forward-only
@@ -721,13 +785,22 @@ Return ONLY the completion text, nothing else. No explanations."""
         custom_preamble: str,
         images: Optional[List[str]],
         api_key: Optional[str],
-        max_tokens: int
+        max_tokens: int,
+        image_names: Optional[List[str]] = None,
+        source_pdf: Optional[str] = None
     ) -> Optional[Tuple[str, int]]:
         """
         Three-pass section-chunked generation. Returns (latex, total_tokens) or None on failure.
         """
+        # Figures were saved under these names before generation; map them so each section
+        # fill receives only its own, instead of every figure or (until now) none at all.
+        image_names = image_names or []
+        by_name = dict(zip(image_names, images or []))
+
         # Pass 1: structure
-        structure = await self._generate_structure(content, theme_desc, cls_instruction, custom_preamble, api_key)
+        structure = await self._generate_structure(content, theme_desc, cls_instruction,
+                                                   custom_preamble, api_key, image_names,
+                                                   source_pdf)
         if not structure or not structure.get("sections"):
             return None
 
@@ -750,6 +823,24 @@ Return ONLY the completion text, nothing else. No explanations."""
             print("_generate_document_chunked: anchor resolution too low, abandoning chunked path")
             return None
 
+        # The PDF goes up once and every section fill references it. Sending it inline per
+        # section instead would re-upload the whole paper N times; without it the fills see
+        # only the flattened text extract, which is what loses equations and tables.
+        # Caches are model-scoped, so this one is for the fill model only — the single
+        # structure call on FLASH_MODEL carries the PDF inline instead.
+        pdf_cache = None
+        if source_pdf:
+            key = self.get_api_key(api_key)
+            if key:
+                fingerprint = hashlib.sha256(source_pdf.encode()).hexdigest()
+                pdf_cache = await self._create_cached_content(
+                    self._build_image_parts([source_pdf]), PRO_MODEL, key, fingerprint,
+                    display_name="source_pdf",
+                )
+            if not pdf_cache:
+                # Not fatal: fills fall back to the text slice, which is today's behaviour.
+                print("_generate_document_chunked: PDF not cached, sections use text only")
+
         # Pass 2: fill sections, bounded so a long document cannot fire dozens of
         # concurrent calls and collect rate-limit truncations instead of content.
         gate = asyncio.Semaphore(SECTION_CONCURRENCY)
@@ -769,9 +860,13 @@ Return ONLY the completion text, nothing else. No explanations."""
                         # Non-fatal: the section is still filled, just without a checklist.
                         print(f"  inventory failed for section {idx} ({section.get('heading')}): {inv_err}")
 
+                names = self._section_figures(section, by_name)
                 body, tokens = await self._fill_section(
                     section_text, section["heading"], preamble,
-                    inv, theme_desc, cls_instruction, api_key, max_tokens
+                    inv, theme_desc, cls_instruction, api_key, max_tokens,
+                    images=[by_name[n] for n in names] or None,
+                    figure_names=names or None,
+                    cached_content=pdf_cache,
                 )
             return idx, body, tokens
 
@@ -818,12 +913,13 @@ Return ONLY the completion text, nothing else. No explanations."""
         custom_preamble: Optional[str] = None,
         images: Optional[List[str]] = None,
         custom_cls_content: Optional[str] = None,
-        max_tokens: int = 65536
+        max_tokens: int = 65536,
+        image_names: Optional[List[str]] = None,
+        source_pdf: Optional[str] = None
     ) -> Tuple[str, int]:
         theme_desc = custom_theme if theme == "custom" else self._get_theme_description(theme)
 
-        # Allow up to 40 000 chars — roughly 20 pages of academic text
-        content = content[:40000]
+        content = content[:MAX_SOURCE_CHARS]
 
         cls_instruction = ""
         if custom_cls_content:
@@ -844,7 +940,21 @@ Return ONLY the completion text, nothing else. No explanations."""
 
         extra_instructions = ("Additional instructions: " + custom_prompt + "\n") if custom_prompt else ""
         extra_preamble = ("Extra preamble: " + custom_preamble + "\n") if custom_preamble else ""
-        images_note = "Images supplied — include each with \\includegraphics in a figure environment.\n" if images else ""
+        # The attached PDF holds what the text extract dropped: math, tables, layout.
+        pdf_note = (
+            "The original PDF is attached. Transcribe equations, tables and numbers from it "
+            "rather than from the text below, which is a flattened extract.\n"
+        ) if source_pdf else ""
+
+        # Naming the files matters: they are already saved under these names, so an invented
+        # one compiles to a missing-figure error and shows up as a spurious missing_images.
+        images_note = (
+            "FIGURES — include each in a figure environment with a caption, using exactly "
+            f"these filenames: {', '.join(image_names)}\n"
+        ) if images and image_names else (
+            "Images supplied — include each with \\includegraphics in a figure environment.\n"
+            if images else ""
+        )
 
         # For long documents (>6000 chars), try section-chunked generation first
         if len(content) > 6000:
@@ -852,7 +962,7 @@ Return ONLY the completion text, nothing else. No explanations."""
                 chunked_result = await self._generate_document_chunked(
                     content, theme_desc, cls_instruction,
                     extra_instructions, custom_preamble or "",
-                    images, api_key, max_tokens
+                    images, api_key, max_tokens, image_names, source_pdf
                 )
                 if chunked_result is not None:
                     print("generate_document: chunked path succeeded")
@@ -900,6 +1010,7 @@ Return ONLY the completion text, nothing else. No explanations."""
             f"{extra_instructions}"
             f"{extra_preamble}"
             f"{images_note}"
+            f"{pdf_note}"
             "\nSOURCE DOCUMENT:\n"
             f"{content}\n\n"
             "BEGIN LATEX OUTPUT NOW:\n"
@@ -917,7 +1028,8 @@ Return ONLY the completion text, nothing else. No explanations."""
             try:
                 if iteration == 0:
                     current_prompt = initial_prompt
-                    current_images = images
+                    # PDF first so the model reads the real document, then the figure files.
+                    current_images = ([source_pdf] + (images or [])) if source_pdf else images
                 else:
                     tail = accumulated[-800:]
                     current_prompt = (

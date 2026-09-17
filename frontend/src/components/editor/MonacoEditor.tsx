@@ -222,10 +222,13 @@ function MonacoEditor({ value, onChange, fileName, onSelectionChange, clsContent
     const ytext = collab.text(fileName);
     // First client into an empty document seeds it from what was loaded from Firestore;
     // later joiners must not, or the text would be appended once per participant.
-    if (ytext.length === 0 && value) ytext.insert(0, value);
+    // Only safe while alone: with a peer present the room already holds this file, and
+    // a local seed would append a second copy of it.
+    if (ytext.length === 0 && value && collab.peerCount() === 0) ytext.insert(0, value);
 
     bindingRef.current = new MonacoBinding(
-      ytext, model, new Set([editor]), collab.provider.awareness
+      // No awareness: remote cursors through a polled relay would lag visibly.
+      ytext, model, new Set([editor]), null
     );
 
     return () => { bindingRef.current?.destroy(); bindingRef.current = null; };

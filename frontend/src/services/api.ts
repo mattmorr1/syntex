@@ -65,6 +65,10 @@ export const api = {
       body: JSON.stringify({ id_token: idToken, invite_code: inviteCode }),
     }),
 
+  // Profile for the already-authenticated caller. Login itself happens against Firebase
+  // in the browser; the API only ever sees the resulting ID token.
+  me: () => request<any>('/auth/me'),
+
   resetPassword: (email: string) =>
     request<{ message: string }>('/auth/reset-password', {
       method: 'POST',
@@ -110,10 +114,26 @@ export const api = {
   deleteProject: (id: string) =>
     request<void>(`/projects/delete-project/${id}`, { method: 'DELETE' }),
 
-  // Admission to a project's collaboration room. The API decides access; the hub only
-  // verifies the signature and that the token names the room being opened.
-  collabToken: (id: string) =>
-    request<{ token: string; room: string }>(`/projects/${id}/collab-token`),
+  // One round trip of the collaboration relay: push local updates, pull everyone else's.
+  collabSync: (id: string, body: {
+    client_id: number;
+    since: number;
+    update: string | null;
+    presence: { name: string; color: string };
+  }) =>
+    request<{
+      now: number;
+      seed: boolean;
+      snapshot: string | null;
+      updates: string[];
+      peers: Array<{ clientId: number; name?: string; color?: string }>;
+      pending: number;
+    }>(`/projects/${id}/collab/sync`, { method: 'POST', body: JSON.stringify(body) }),
+
+  collabSnapshot: (id: string, body: { snapshot: string; up_to: number }) =>
+    request<{ saved: boolean }>(`/projects/${id}/collab/snapshot`, {
+      method: 'POST', body: JSON.stringify(body),
+    }),
 
   setPlacement: (id: string, placement: { folder?: string; sort_order?: number }) =>
     request<any>(`/projects/${id}/placement`, {
@@ -291,7 +311,7 @@ export const api = {
     }),
 
   // Upload
-  uploadFile: async (file: File, theme: string, customTheme?: string, clsContent?: string, maxTokens?: number): Promise<{ project_id: string; tokens_used: number; missing_images: string[] }> => {
+  uploadFile: async (file: File, theme: string, customTheme?: string, clsContent?: string, maxTokens?: number): Promise<{ project_id: string; tokens_used: number; missing_images: string[]; truncated: boolean; source_chars_used: number }> => {
     let token = useAuthStore.getState().token;
     if (firebaseEnabled) {
       const fresh = await getCurrentToken();

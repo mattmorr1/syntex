@@ -11,12 +11,13 @@ import logging
 
 from api.models.schemas import (
     ProjectCreate, ProjectUpdate, ProjectResponse, ProjectSummary, ProjectPlacement,
-    ProjectFile, FeedbackRequest
+    ProjectFile, FeedbackRequest, CollabSyncRequest, CollabSnapshotRequest
 )
 from api.services.firestore import db_service
-from api.services.gemini import gemini_service
+from api.services.gemini import gemini_service, MAX_SOURCE_CHARS
 from api.services.latex import latex_service
 from api.routers.auth import get_current_user
+from config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +125,31 @@ async def collab_token(project_id: str, user: dict = Depends(get_current_user)):
         algorithm=Config.ALGORITHM,
     )
     return {"token": token, "room": f"project:{project_id}"}
+
+@router.post("/{project_id}/collab/sync")
+async def collab_sync(project_id: str, body: CollabSyncRequest,
+                      user: dict = Depends(get_current_user)):
+    """
+    One round trip of the collaboration relay: push this client's update, pull everyone
+    else's, and refresh presence. Deliberately not a socket — the room lives in Firestore
+    so the service keeps scaling to zero between sessions.
+    """
+    if not await db_service.get_project(project_id, user["uid"]):
+        raise HTTPException(status_code=404, detail="Project not found")
+    presence = dict(body.presence or {})
+    presence["name"] = user.get("username") or user.get("email") or "Anonymous"
+    return await db_service.sync_collab_room(
+        project_id, body.client_id, body.since, body.update, presence
+    )
+
+@router.post("/{project_id}/collab/snapshot")
+async def collab_snapshot(project_id: str, body: CollabSnapshotRequest,
+                          user: dict = Depends(get_current_user)):
+    """Fold the delta tail into a merged state so a late joiner replays less."""
+    if not await db_service.get_project(project_id, user["uid"]):
+        raise HTTPException(status_code=404, detail="Project not found")
+    saved = await db_service.save_collab_snapshot(project_id, body.snapshot, body.up_to)
+    return {"saved": saved}
 
 @router.patch("/{project_id}/placement")
 async def set_placement(project_id: str, body: ProjectPlacement,
@@ -274,6 +300,11 @@ async def upload_file(
 
     try:
         content = await file.read()
+        if len(content) > Config.MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File exceeds the {Config.MAX_FILE_SIZE // (1024 * 1024)}MB limit",
+            )
         with open(file_path, "wb") as f:
             f.write(content)
 
@@ -332,9 +363,31 @@ async def upload_file(
             logger.warning(f"Document extraction failed, falling back to raw text: {extract_err}")
             text_content = content.decode("utf-8", errors="ignore")[:5000]
 
+        img_ext_map = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/bmp": "bmp"}
+        # Named before generation, not after: the model has to write these exact filenames
+        # or \includegraphics points at a file the project does not contain.
+        figures: list = []
+        for idx, img_data in enumerate(extracted_images):
+            if not img_data.startswith("data:"):
+                continue
+            mime = img_data.split(";")[0][5:]
+            figures.append((f"figure{idx + 1}.{img_ext_map.get(mime, 'png')}", mime, img_data))
+        figure_names = [name for name, _, _ in figures]
+
+        # For a PDF, the text extract is only a map: it gives deterministic offsets for the
+        # section anchors. The file itself carries the maths, tables and layout that
+        # page.get_text() drops, so it goes to the model as well.
+        source_pdf = (
+            f"data:application/pdf;base64,{base64.b64encode(content).decode()}"
+            if file.filename.lower().endswith(".pdf") else None
+        )
+
+        truncated = len(text_content) > MAX_SOURCE_CHARS
         logger.info(
             f"Starting generation: file={file.filename!r}, "
             f"text_len={len(text_content)}, images={len(extracted_images)}, "
+            f"figures={figure_names}, truncated={truncated}, "
+            f"native_pdf={bool(source_pdf)}, "
             f"has_cls={bool(custom_cls and custom_cls.strip())}"
         )
 
@@ -346,7 +399,9 @@ async def upload_file(
                 custom_theme,
                 custom_prompt=custom_prompt,
                 custom_preamble=custom_preamble,
-                images=extracted_images or None,
+                images=[data for _, _, data in figures] or None,
+                image_names=figure_names or None,
+                source_pdf=source_pdf,
                 custom_cls_content=custom_cls if custom_cls and custom_cls.strip() else None,
                 max_tokens=max_tokens if max_tokens else 65536,
             )
@@ -405,22 +460,13 @@ async def upload_file(
         ]
 
         # Add embedded images from the source document as project files (via GCS)
-        img_ext_map = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/bmp": "bmp"}
-        embedded_image_names: set = set()
-        # We need a temporary project ID for GCS paths — use a placeholder; real ID assigned after create
-        # Instead, collect image bytes and store after project creation
         pending_images: list = []
-        for idx, img_data in enumerate(extracted_images):
-            if not img_data.startswith("data:"):
-                continue
-            mime = img_data.split(";")[0][5:]
-            ext = img_ext_map.get(mime, "png")
-            img_name = f"figure{idx + 1}.{ext}"
+        for img_name, mime, img_data in figures:
             b64_data = img_data.split(",", 1)[1] if "," in img_data else img_data
-            import base64 as _base64
-            pending_images.append({"name": img_name, "mime": mime, "ext": ext,
-                                    "data": _base64.b64decode(b64_data)})
-            embedded_image_names.add(img_name)
+            pending_images.append({"name": img_name, "mime": mime,
+                                   "ext": img_ext_map.get(mime, "png"),
+                                   "data": base64.b64decode(b64_data)})
+        embedded_image_names: set = {name for name, _, _ in figures}
 
         # Add custom class file if provided
         if custom_cls and custom_cls.strip():
@@ -465,6 +511,8 @@ async def upload_file(
             "project_id": project_id,
             "tokens_used": tokens,
             "missing_images": missing_images,
+            "truncated": truncated,
+            "source_chars_used": min(len(text_content), MAX_SOURCE_CHARS),
         }
 
     finally:
