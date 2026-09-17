@@ -7,7 +7,7 @@ from config import Config
 logger = logging.getLogger(__name__)
 
 PROVIDER_MODELS = {
-    "gemini":    {"flash": "gemini-3.0-flash-preview",    "pro": "gemini-3.1-pro-preview"},
+    "gemini":    {"flash": "gemini-3.8-flash",            "pro": "gemini-3.1-pro-preview"},
     "openai":    {"flash": "gpt-4o-mini",                 "pro": "gpt-4o"},
     "anthropic": {"flash": "claude-3-5-haiku-20241022",   "pro": "claude-opus-4-5"},
     "mistral":   {"flash": "mistral-small-latest",        "pro": "mistral-large-latest"},
