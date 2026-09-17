@@ -33,8 +33,6 @@ export interface CollabSession {
   text: (fileName: string) => Y.Text;
   /** Subscribe to the peer list; returns an unsubscribe. */
   onPeers: (cb: (peers: Collaborator[]) => void) => () => void;
-  /** Peers seen on the last round trip. Zero means nothing can be duplicated by a local seed. */
-  peerCount: () => number;
   destroy: () => void;
 }
 
@@ -151,7 +149,6 @@ export function joinProject(
   return {
     doc,
     text: (fileName: string) => doc.getText(`file:${fileName}`),
-    peerCount: () => peers,
     onPeers: (cb) => {
       subscribers.add(cb);
       return () => subscribers.delete(cb);

@@ -49,6 +49,9 @@ function MonacoEditor({ value, onChange, fileName, onSelectionChange, clsContent
   fileNameRef.current = fileName;
   const [suggesting, setSuggesting] = useState(false);
   const bindingRef = useRef<MonacoBinding | null>(null);
+  // Monaco is driven by the binding when one exists, and by `value` when it does not.
+  const [bound, setBound] = useState(false);
+  const [ytextEpoch, setYtextEpoch] = useState(0);
 
   // Register cls-defined commands as completion items whenever clsContent changes
   const clsDisposableRef = useRef<any>(null);
@@ -220,19 +223,36 @@ function MonacoEditor({ value, onChange, fileName, onSelectionChange, clsContent
     if (!collab || !editor || !model) return;
 
     const ytext = collab.text(fileName);
-    // First client into an empty document seeds it from what was loaded from Firestore;
-    // later joiners must not, or the text would be appended once per participant.
-    // Only safe while alone: with a peer present the room already holds this file, and
-    // a local seed would append a second copy of it.
-    if (ytext.length === 0 && value && collab.peerCount() === 0) ytext.insert(0, value);
+
+    // Never bind an empty Y.Text over a file that has content. MonacoBinding makes the
+    // model match the Y.Text, so binding here blanks the editor, and the blank then
+    // autosaves over the stored file. Seeding belongs to the room claim alone (one client,
+    // decided server-side); until this file's text arrives we stay uncollaborative for it,
+    // which loses live sync for that file but never its contents.
+    if (ytext.length === 0 && value) {
+      setBound(false);
+      const onArrive = () => {
+        if (ytext.length > 0) {
+          ytext.unobserve(onArrive);
+          setYtextEpoch((n) => n + 1);
+        }
+      };
+      ytext.observe(onArrive);
+      return () => ytext.unobserve(onArrive);
+    }
 
     bindingRef.current = new MonacoBinding(
       // No awareness: remote cursors through a polled relay would lag visibly.
       ytext, model, new Set([editor]), null
     );
+    setBound(true);
 
-    return () => { bindingRef.current?.destroy(); bindingRef.current = null; };
-  }, [collab, fileName]);
+    return () => {
+      bindingRef.current?.destroy();
+      bindingRef.current = null;
+      setBound(false);
+    };
+  }, [collab, fileName, value, ytextEpoch]);
 
   // Cleanup
   useEffect(() => {
@@ -279,7 +299,7 @@ function MonacoEditor({ value, onChange, fileName, onSelectionChange, clsContent
       <Editor
         height="100%"
         language={getLanguageFromFileName(fileName)}
-        {...(collab ? {} : { value })}
+        {...(bound ? {} : { value })}
         onChange={onChange}
         onMount={handleEditorMount}
         theme={mode === 'dark' ? 'uea-dark' : 'uea-light'}

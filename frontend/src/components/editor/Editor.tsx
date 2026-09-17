@@ -134,6 +134,9 @@ export function Editor() {
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const currentProjectRef = useRef(currentProject);
   currentProjectRef.current = currentProject;
+  // Files that held content when the project loaded. A sync failure that blanks the editor
+  // must never be written back as an intentional wipe, so autosave refuses to send one.
+  const nonEmptyAtLoadRef = useRef<Set<string>>(new Set());
   // The autosave timer closes over its first render; read collab through a ref.
   const collabRef = useRef<CollabSession | null>(null);
   const [editorSelection, setEditorSelection] = useState<EditorSelection | null>(null);
@@ -201,6 +204,11 @@ export function Editor() {
   const loadProject = async (id: string) => {
     try {
       const project = await api.getProject(id);
+      nonEmptyAtLoadRef.current = new Set(
+        (project.files || [])
+          .filter((f: any) => (f.content || '').trim())
+          .map((f: any) => f.name),
+      );
       setProject({
         id: project.id,
         name: project.name,
@@ -444,6 +452,20 @@ export function Editor() {
     autoSaveTimerRef.current = setTimeout(async () => {
       const proj = currentProjectRef.current;
       if (!proj) return;
+
+      const wiped = proj.files.filter(
+        (f: any) => nonEmptyAtLoadRef.current.has(f.name) && !(f.content || '').trim(),
+      );
+      if (wiped.length) {
+        setSnackbar({
+          open: true,
+          severity: 'warning',
+          message: `Not saving: ${wiped.map((f: any) => f.name).join(', ')} came back empty. `
+            + 'Reload before editing — this is a sync fault, not your edit.',
+        });
+        return;
+      }
+
       try {
         const result = await api.saveProject(proj.id, proj.files, collabRef.current ? undefined : proj.updatedAt);
         setUnsavedChanges(false);
