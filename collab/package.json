@@ -1,0 +1,16 @@
+{
+  "name": "syntex-collab",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Yjs collaboration hub. Stateful; deploy separately from the API.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "jsonwebtoken": "^9.0.3",
+    "ws": "^8.18.0",
+    "y-websocket": "^2.0.4",
+    "yjs": "^13.6.20"
+  }
+}

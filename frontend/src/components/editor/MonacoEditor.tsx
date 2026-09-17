@@ -1,8 +1,11 @@
-import { useRef, useState, useEffect, useCallback, forwardRef, useImperativeHandle } from 'react';
+import { useRef, useState, useEffect, forwardRef, useImperativeHandle } from 'react';
 import Editor, { Monaco, OnMount } from '@monaco-editor/react';
-import { Box, Typography } from '@mui/material';
+import { Box, Typography, CircularProgress } from '@mui/material';
+import '../../services/monacoSetup';  // configures the loader before the editor mounts
+import { MonacoBinding } from 'y-monaco';
 import { useThemeStore } from '../../store/themeStore';
 import { api } from '../../services/api';
+import type { CollabSession } from '../../services/collab';
 
 export interface EditorSelection {
   text: string;
@@ -29,18 +32,26 @@ interface MonacoEditorProps {
   onSelectionChange?: (selection: EditorSelection | null) => void;
   clsContent?: string;
   compileErrors?: CompileError[];
+  /** When present, the Y.Text for this file owns the buffer instead of `value`. */
+  collab?: CollabSession | null;
 }
 
 export const MonacoEditor = forwardRef<MonacoEditorHandle, MonacoEditorProps>(
-function MonacoEditor({ value, onChange, fileName, projectId, onSelectionChange, clsContent, compileErrors }, ref) {
+function MonacoEditor({ value, onChange, fileName, onSelectionChange, clsContent, compileErrors, collab }, ref) {
   const { mode } = useThemeStore();
   const editorRef = useRef<any>(null);
   const monacoRef = useRef<Monaco | null>(null);
-  const [ghostText, setGhostText] = useState('');
-  const [ghostPosition, setGhostPosition] = useState<{ lineNumber: number; column: number } | null>(null);
-  const decorationsRef = useRef<string[]>([]);
-  const autocompleteTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const inlineDisposableRef = useRef<any>(null);
+  // fileName changes as tabs switch; the provider is registered once, so it reads
+  // the current name through a ref rather than closing over a stale value.
+  const fileNameRef = useRef(fileName);
+  fileNameRef.current = fileName;
+  const [suggesting, setSuggesting] = useState(false);
+  const bindingRef = useRef<MonacoBinding | null>(null);
+  // Monaco is driven by the binding when one exists, and by `value` when it does not.
+  const [bound, setBound] = useState(false);
+  const [ytextEpoch, setYtextEpoch] = useState(0);
 
   // Register cls-defined commands as completion items whenever clsContent changes
   const clsDisposableRef = useRef<any>(null);
@@ -61,7 +72,7 @@ function MonacoEditor({ value, onChange, fileName, projectId, onSelectionChange,
     clsDisposableRef.current?.dispose();
 
     clsDisposableRef.current = monaco.languages.registerCompletionItemProvider('latex', {
-      provideCompletionItems: (model, position) => {
+      provideCompletionItems: (model: any, position: any) => {
         const word = model.getWordUntilPosition(position);
         const range = {
           startLineNumber: position.lineNumber,
@@ -114,43 +125,28 @@ function MonacoEditor({ value, onChange, fileName, projectId, onSelectionChange,
   const handleEditorMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
     monacoRef.current = monaco;
-    
+
     // Register LaTeX language
     registerLaTeXLanguage(monaco);
-    
-    // Set up ghost text widget
-    editor.onDidChangeModelContent(() => {
-      clearGhostText();
-      scheduleAutocomplete();
-    });
-    
-    editor.onDidChangeCursorPosition(() => {
-      clearGhostText();
-    });
-    
-    // Tab key: accept ghost text, or indent selected lines, or insert spaces
-    editor.addCommand(monaco.KeyCode.Tab, () => {
-      if (ghostText && ghostPosition) {
-        acceptGhostText();
-        return;
-      }
-      const sel = editor.getSelection();
-      if (sel && !sel.isEmpty() && sel.startLineNumber !== sel.endLineNumber) {
-        // Multi-line selection → indent all selected lines
-        editor.trigger('keyboard', 'editor.action.indentLines', null);
-      } else {
-        editor.trigger('keyboard', 'tab', null);
-      }
-    });
 
-    // Shift+Tab: outdent selected lines
-    editor.addCommand(monaco.KeyMod.Shift | monaco.KeyCode.Tab, () => {
-      editor.trigger('keyboard', 'editor.action.outdentLines', null);
-    });
-
-    // Escape to dismiss ghost text
-    editor.addCommand(monaco.KeyCode.Escape, () => {
-      clearGhostText();
+    // Inline completions are Monaco's own ghost-text mechanism: it renders the
+    // suggestion and owns Tab-to-accept, including how that interacts with the
+    // suggest widget. The previous hand-rolled version bound Tab once at mount and
+    // closed over the initial (empty) state, so it could never accept anything.
+    inlineDisposableRef.current = monaco.languages.registerInlineCompletionsProvider('latex', {
+      provideInlineCompletions: async (model: any, position: any, _ctx: any, token: any) => {
+        const suggestion = await fetchAutocomplete(model, position, token);
+        if (!suggestion) return { items: [] };
+        return {
+          items: [{
+            insertText: suggestion,
+            range: new monaco.Range(
+              position.lineNumber, position.column, position.lineNumber, position.column
+            ),
+          }],
+        };
+      },
+      freeInlineCompletions: () => {},
     });
 
     // Track selection for AI context
@@ -175,41 +171,19 @@ function MonacoEditor({ value, onChange, fileName, projectId, onSelectionChange,
     });
   };
 
-  const clearGhostText = useCallback(() => {
-    if (editorRef.current && decorationsRef.current.length > 0) {
-      decorationsRef.current = editorRef.current.deltaDecorations(decorationsRef.current, []);
-    }
-    setGhostText('');
-    setGhostPosition(null);
-  }, []);
-
-  const scheduleAutocomplete = useCallback(() => {
-    if (autocompleteTimeoutRef.current) {
-      clearTimeout(autocompleteTimeoutRef.current);
-    }
-    
-    autocompleteTimeoutRef.current = setTimeout(async () => {
-      await fetchAutocomplete();
-    }, 800);
-  }, []);
-
-  const fetchAutocomplete = async () => {
-    if (!editorRef.current) return;
-
-    const editor = editorRef.current;
-    const position = editor.getPosition();
-    const model = editor.getModel();
-
-    if (!position || !model) return;
-
-    // Skip if line is empty or just whitespace
+  /**
+   * Fetch one suggestion for the cursor position. Monaco calls this, renders the
+   * result as ghost text, and handles acceptance; it also passes a cancellation
+   * token when the user types on, which aborts the in-flight request.
+   */
+  const fetchAutocomplete = async (model: any, position: any, token: any): Promise<string | null> => {
     const currentLine = model.getLineContent(position.lineNumber);
-    if (!currentLine.trim()) return;
+    if (!currentLine.trim()) return null;
 
     // Skip trivial triggers: comments, closing braces/brackets, very short input
     const trimmed = currentLine.trimStart();
-    if (trimmed.startsWith('%') || /^[}\])]$/.test(trimmed)) return;
-    if (trimmed.length < 3) return;
+    if (trimmed.startsWith('%') || /^[}\])]$/.test(trimmed)) return null;
+    if (trimmed.length < 3) return null;
 
     // Send only ~50 lines before cursor instead of entire document
     const startLine = Math.max(1, position.lineNumber - 50);
@@ -220,97 +194,72 @@ function MonacoEditor({ value, onChange, fileName, projectId, onSelectionChange,
       endColumn: position.column,
     });
 
-    // Cancel any in-flight request
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
+    abortControllerRef.current?.abort();
     const controller = new AbortController();
     abortControllerRef.current = controller;
+    token?.onCancellationRequested?.(() => controller.abort());
 
+    setSuggesting(true);
     try {
-      const result = await api.autocomplete(context, context.length, fileName, controller.signal);
-
-      if (!controller.signal.aborted && result.suggestion && result.suggestion.trim()) {
-        showGhostText(result.suggestion, position);
-      }
-    } catch (err) {
-      // Silent fail for autocomplete (including aborted requests)
+      const result = await api.autocomplete(context, context.length, fileNameRef.current, controller.signal);
+      if (controller.signal.aborted || token?.isCancellationRequested) return null;
+      const suggestion = (result.suggestion || '').replace(/^\n+/, '');
+      return suggestion.trim() ? suggestion : null;
+    } catch {
+      return null; // silent, including aborts
+    } finally {
+      setSuggesting(false);
     }
   };
 
-  const showGhostText = (suggestion: string, position: { lineNumber: number; column: number }) => {
-    if (!editorRef.current || !monacoRef.current) return;
-    
-    const monaco = monacoRef.current;
-    const editor = editorRef.current;
-    
-    // Clean suggestion
-    const cleanSuggestion = suggestion.replace(/^\n+/, '');
-    if (!cleanSuggestion) return;
-    
-    setGhostText(cleanSuggestion);
-    setGhostPosition(position);
-    
-    // Create inline decoration for ghost text
-    const newDecorations = [
-      {
-        range: new monaco.Range(
-          position.lineNumber,
-          position.column,
-          position.lineNumber,
-          position.column
-        ),
-        options: {
-          after: {
-            content: cleanSuggestion.split('\n')[0], // First line only for inline
-            inlineClassName: 'ghost-text-decoration',
-          },
-        },
-      },
-    ];
-    
-    decorationsRef.current = editor.deltaDecorations(decorationsRef.current, newDecorations);
-  };
+  // Bind this file's Y.Text to the editor model. Rebinds when the tab changes, since
+  // each file is a separate Y.Text inside the one project document.
+  useEffect(() => {
+    bindingRef.current?.destroy();
+    bindingRef.current = null;
 
-  const acceptGhostText = useCallback(() => {
-    if (!editorRef.current || !ghostText || !ghostPosition) return;
-    
     const editor = editorRef.current;
-    
-    // Insert the ghost text
-    editor.executeEdits('autocomplete', [
-      {
-        range: {
-          startLineNumber: ghostPosition.lineNumber,
-          startColumn: ghostPosition.column,
-          endLineNumber: ghostPosition.lineNumber,
-          endColumn: ghostPosition.column,
-        },
-        text: ghostText,
-      },
-    ]);
-    
-    // Move cursor to end of inserted text
-    const lines = ghostText.split('\n');
-    const newLine = ghostPosition.lineNumber + lines.length - 1;
-    const newColumn = lines.length === 1 
-      ? ghostPosition.column + ghostText.length 
-      : lines[lines.length - 1].length + 1;
-    
-    editor.setPosition({ lineNumber: newLine, column: newColumn });
-    
-    clearGhostText();
-  }, [ghostText, ghostPosition, clearGhostText]);
+    const model = editor?.getModel();
+    if (!collab || !editor || !model) return;
+
+    const ytext = collab.text(fileName);
+
+    // Never bind an empty Y.Text over a file that has content. MonacoBinding makes the
+    // model match the Y.Text, so binding here blanks the editor, and the blank then
+    // autosaves over the stored file. Seeding belongs to the room claim alone (one client,
+    // decided server-side); until this file's text arrives we stay uncollaborative for it,
+    // which loses live sync for that file but never its contents.
+    if (ytext.length === 0 && value) {
+      setBound(false);
+      const onArrive = () => {
+        if (ytext.length > 0) {
+          ytext.unobserve(onArrive);
+          setYtextEpoch((n) => n + 1);
+        }
+      };
+      ytext.observe(onArrive);
+      return () => ytext.unobserve(onArrive);
+    }
+
+    bindingRef.current = new MonacoBinding(
+      // No awareness: remote cursors through a polled relay would lag visibly.
+      ytext, model, new Set([editor]), null
+    );
+    setBound(true);
+
+    return () => {
+      bindingRef.current?.destroy();
+      bindingRef.current = null;
+      setBound(false);
+    };
+  }, [collab, fileName, value, ytextEpoch]);
 
   // Cleanup
   useEffect(() => {
     return () => {
-      if (autocompleteTimeoutRef.current) {
-        clearTimeout(autocompleteTimeoutRef.current);
-      }
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
+      abortControllerRef.current?.abort();
+      inlineDisposableRef.current?.dispose();
+      bindingRef.current?.destroy();
     };
   }, []);
 
@@ -347,20 +296,10 @@ function MonacoEditor({ value, onChange, fileName, projectId, onSelectionChange,
 
   return (
     <Box sx={{ height: '100%', position: 'relative' }}>
-      <style>
-        {`
-          .ghost-text-decoration {
-            color: ${mode === 'dark' ? '#71717a' : '#a1a1aa'} !important;
-            font-style: italic;
-            opacity: 0.7;
-          }
-        `}
-      </style>
-      
       <Editor
         height="100%"
         language={getLanguageFromFileName(fileName)}
-        value={value}
+        {...(bound ? {} : { value })}
         onChange={onChange}
         onMount={handleEditorMount}
         theme={mode === 'dark' ? 'uea-dark' : 'uea-light'}
@@ -374,6 +313,7 @@ function MonacoEditor({ value, onChange, fileName, projectId, onSelectionChange,
           scrollBeyondLastLine: false,
           suggestOnTriggerCharacters: true,
           quickSuggestions: true,
+          inlineSuggest: { enabled: true },
           tabSize: 2,
           renderWhitespace: 'selection',
           bracketPairColorization: { enabled: true },
@@ -405,6 +345,7 @@ function MonacoEditor({ value, onChange, fileName, projectId, onSelectionChange,
               'editorSuggestWidget.background': '#18181b',
               'editorSuggestWidget.border': '#3f3f46',
               'editorSuggestWidget.selectedBackground': '#27272a',
+              'editorGhostText.foreground': '#71717a',
             },
           });
           
@@ -423,8 +364,8 @@ function MonacoEditor({ value, onChange, fileName, projectId, onSelectionChange,
             colors: {
               'editor.background': '#fafafa',
               'editor.foreground': '#0a0a0a',
-              'editorLineNumber.foreground': '#d4d4d8',
-              'editorLineNumber.activeForeground': '#71717a',
+              'editorLineNumber.foreground': '#8c8c94',
+              'editorLineNumber.activeForeground': '#3f3f46',
               'editorCursor.foreground': '#0a0a0a',
               'editor.selectionBackground': '#0a0a0a18',
               'editor.lineHighlightBackground': '#f4f4f500',
@@ -443,12 +384,13 @@ function MonacoEditor({ value, onChange, fileName, projectId, onSelectionChange,
               'focusBorder': '#0a0a0a',
               'scrollbarSlider.background': '#d4d4d840',
               'scrollbarSlider.hoverBackground': '#a1a1aa60',
+              'editorGhostText.foreground': '#a1a1aa',
             },
           });
         }}
       />
       
-      {ghostText && (
+      {suggesting && (
         <Box
           sx={{
             position: 'absolute',
@@ -459,12 +401,15 @@ function MonacoEditor({ value, onChange, fileName, projectId, onSelectionChange,
             py: 0.5,
             borderRadius: 1,
             boxShadow: 1,
-            fontSize: 12,
-            color: 'text.secondary',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 0.75,
+            pointerEvents: 'none',
           }}
         >
-          <Typography variant="caption">
-            Press <strong>Tab</strong> to accept | <strong>Esc</strong> to dismiss
+          <CircularProgress size={10} thickness={6} />
+          <Typography variant="caption" color="text.secondary">
+            Suggesting&hellip; <strong>Tab</strong> to accept
           </Typography>
         </Box>
       )}
@@ -486,7 +431,7 @@ function getLanguageFromFileName(fileName: string): string {
 function registerLaTeXLanguage(monaco: Monaco) {
   // Check if already registered
   const languages = monaco.languages.getLanguages();
-  if (languages.some(l => l.id === 'latex')) return;
+  if (languages.some((l: any) => l.id === 'latex')) return;
   
   monaco.languages.register({ id: 'latex' });
   
@@ -515,7 +460,7 @@ function registerLaTeXLanguage(monaco: Monaco) {
   
   // LaTeX snippets
   monaco.languages.registerCompletionItemProvider('latex', {
-    provideCompletionItems: (model, position) => {
+    provideCompletionItems: (model: any, position: any) => {
       const word = model.getWordUntilPosition(position);
       const range = {
         startLineNumber: position.lineNumber,

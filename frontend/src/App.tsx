@@ -1,4 +1,4 @@
-import { useMemo, useEffect } from 'react';
+import { useMemo, useEffect, lazy, Suspense } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { ThemeProvider, CssBaseline, Box, CircularProgress } from '@mui/material';
 import { useThemeStore } from './store/themeStore';
@@ -10,10 +10,22 @@ import { Layout } from './components/common/Layout';
 import { Login } from './components/auth/Login';
 import { Register } from './components/auth/Register';
 import { ResetPassword } from './components/auth/ResetPassword';
+import { RequestAccess } from './components/auth/RequestAccess';
 import { Home } from './components/Home';
-import { Editor } from './components/editor/Editor';
 import { AdminDashboard } from './components/admin/Dashboard';
 import { Settings } from './components/settings/Settings';
+
+// Monaco is several megabytes; keep it out of the bundle the login and home
+// screens have to download.
+const Editor = lazy(() => import('./components/editor/Editor').then(m => ({ default: m.Editor })));
+
+function RouteFallback() {
+  return (
+    <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>
+      <CircularProgress size={24} />
+    </Box>
+  );
+}
 
 function ProtectedRoute({ children, adminOnly = false }: { children: React.ReactNode; adminOnly?: boolean }) {
   const { isAuthenticated, user, isHydrated } = useAuthStore();
@@ -61,6 +73,7 @@ function App() {
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
         <Route path="/reset-password" element={<ResetPassword />} />
+        <Route path="/request-access" element={<RequestAccess />} />
         
         <Route path="/" element={
           <ProtectedRoute>
@@ -70,7 +83,9 @@ function App() {
         
         <Route path="/editor/:projectId?" element={
           <ProtectedRoute>
-            <Editor />
+            <Suspense fallback={<RouteFallback />}>
+              <Editor />
+            </Suspense>
           </ProtectedRoute>
         } />
         

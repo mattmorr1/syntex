@@ -2,6 +2,8 @@ import { useState, useCallback, useEffect } from 'react';
 import { useSettingsStore } from '../store/settingsStore';
 import { useNavigate } from 'react-router-dom';
 import { MissingImagesDialog } from './editor/MissingImagesDialog';
+import { ConfirmDialog } from './common/ConfirmDialog';
+import { ShareDialog } from './common/ShareDialog';
 import {
   Box,
   Typography,
@@ -15,6 +17,13 @@ import {
   MenuItem,
   Skeleton,
   Tooltip,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  List,
+  ListItemButton,
+  ListItemText,
 } from '@mui/material';
 import {
   Add,
@@ -31,10 +40,18 @@ import {
   ContentCopy,
   Delete,
   Download,
+  ChevronRight,
+  FolderOutlined,
+  PersonAdd,
 } from '@mui/icons-material';
 import { api } from '../services/api';
 import { useThemeStore } from '../store/themeStore';
-import { Project } from '../store/editorStore';
+import { useAuthStore } from '../store/authStore';
+import { ProjectSummary } from '../store/editorStore';
+
+const ACCEPTED_UPLOADS = ['.pdf', '.docx', '.doc'];
+
+const SHARED_GROUP = 'Shared with me';
 
 const TEMPLATES = [
   { id: 'blank', label: 'Blank', icon: Add },
@@ -57,14 +74,21 @@ export function Home() {
   const [dragActive, setDragActive] = useState(false);
 
   const [missingImagesDialog, setMissingImagesDialog] = useState<{ projectId: string; images: string[] } | null>(null);
-  const [projects, setProjects] = useState<Project[]>([]);
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
-  const [menuAnchor, setMenuAnchor] = useState<{ el: HTMLElement; project: Project } | null>(null);
+  const [menuAnchor, setMenuAnchor] = useState<{ el: HTMLElement; project: ProjectSummary } | null>(null);
+  const [shareProject, setShareProject] = useState<ProjectSummary | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const [moveDialog, setMoveDialog] = useState<{ project: ProjectSummary } | null>(null);
+  const [deleteDialog, setDeleteDialog] = useState<{ project: ProjectSummary } | null>(null);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
   const isDark = mode === 'dark';
   const purpleBorder = isDark ? '#262626' : '#e4e4e7';
   const accentBorder = isDark ? '#2d2d2d' : '#e4e4e7';
+  const countBg = isDark ? '#1f1f22' : '#f0f0f1';
   const hoverBg = isDark ? 'rgba(255, 255, 255, 0.04)' : 'rgba(0, 0, 0, 0.03)';
   const surfaceBg = isDark ? '#121212' : '#ffffff';
 
@@ -74,17 +98,9 @@ export function Home() {
 
   const loadProjects = async () => {
     try {
-      const data = await api.getProjects();
-      setProjects(data.map((p: any) => ({
-        id: p.id,
-        name: p.name,
-        files: p.files,
-        mainFile: p.main_file,
-        theme: p.theme,
-        customTheme: p.custom_theme,
-        createdAt: p.created_at,
-        updatedAt: p.updated_at,
-      })));
+      // api.getProjects already maps snake_case to camelCase; re-mapping here silently
+      // dropped folder and sortOrder, so folders only survived until the next reload.
+      setProjects(await api.getProjects(useAuthStore.getState().user?.uid));
     } catch (err: any) {
       setError(err.message || 'Failed to load documents');
     } finally {
@@ -108,20 +124,24 @@ export function Home() {
     setDragActive(false);
 
     const droppedFile = e.dataTransfer.files?.[0];
-    if (droppedFile && (droppedFile.name.endsWith('.docx') || droppedFile.name.endsWith('.doc'))) {
+    if (droppedFile && ACCEPTED_UPLOADS.some(ext => droppedFile.name.toLowerCase().endsWith(ext))) {
       setFile(droppedFile);
       setError('');
     } else {
-      setError('Please upload a .docx or .doc file');
+      setError('Please upload a .pdf, .docx or .doc file');
     }
   }, []);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0];
-    if (selectedFile) {
-      setFile(selectedFile);
-      setError('');
+    if (!selectedFile) return;
+    // Same check as the drop handler: browsing used to accept anything at all.
+    if (!ACCEPTED_UPLOADS.some(ext => selectedFile.name.toLowerCase().endsWith(ext))) {
+      setError('Please upload a .pdf, .docx or .doc file');
+      return;
     }
+    setFile(selectedFile);
+    setError('');
   };
 
   const handleClsSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -149,11 +169,16 @@ export function Home() {
       setUploadProgress(100);
       clearInterval(progressInterval);
 
+      // Carried into the editor rather than shown here, which unmounts on navigate.
+      const warning = result.truncated
+        ? `Only the first ${Math.round(result.source_chars_used / 1000)}k characters of the source were converted.`
+        : undefined;
+
       if (result.missing_images && result.missing_images.length > 0) {
         setMissingImagesDialog({ projectId: result.project_id, images: result.missing_images });
         setUploading(false);
       } else {
-        navigate(`/editor/${result.project_id}`);
+        navigate(`/editor/${result.project_id}`, warning ? { state: { warning } } : undefined);
       }
     } catch (err: any) {
       setError(err.message || 'Upload failed');
@@ -174,7 +199,7 @@ export function Home() {
     }
   };
 
-  const handleMenuOpen = (e: React.MouseEvent<HTMLElement>, project: Project) => {
+  const handleMenuOpen = (e: React.MouseEvent<HTMLElement>, project: ProjectSummary) => {
     e.stopPropagation();
     setMenuAnchor({ el: e.currentTarget, project });
   };
@@ -192,21 +217,102 @@ export function Home() {
     handleMenuClose();
   };
 
-  const handleDelete = async () => {
+  const handleDelete = () => {
     if (!menuAnchor) return;
-    if (!confirm('Delete this document?')) return;
+    setDeleteDialog({ project: menuAnchor.project });
+    handleMenuClose();
+  };
+
+  const handleConfirmDelete = async () => {
+    const project = deleteDialog!.project;
+    setDeleteDialog(null);
     try {
-      await api.deleteProject(menuAnchor.project.id);
-      setProjects((prev) => prev.filter((p) => p.id !== menuAnchor.project.id));
+      await api.deleteProject(project.id);
+      setProjects((prev) => prev.filter((p) => p.id !== project.id));
     } catch (err: any) {
       setError(err.message);
     }
-    handleMenuClose();
   };
 
   const filteredProjects = projects
     .filter((p) => p.name.toLowerCase().includes(search.toLowerCase()))
     .sort((a, b) => (new Date(b.updatedAt ?? 0).getTime() || 0) - (new Date(a.updatedAt ?? 0).getTime() || 0));
+
+  // Group into folders. Explicit sort_order wins; ties and untouched projects fall back
+  // to most-recent-first, which is what the list did before folders existed.
+  const grouped = (() => {
+    const byFolder = new Map<string, ProjectSummary[]>();
+    for (const p of filteredProjects) {
+      const key = p.shared ? SHARED_GROUP : (p.folder || '');
+      const bucket = byFolder.get(key);
+      if (bucket) bucket.push(p); else byFolder.set(key, [p]);
+    }
+    for (const list of byFolder.values()) {
+      list.sort((a, b) => {
+        const d = (a.sortOrder ?? 0) - (b.sortOrder ?? 0);
+        if (d !== 0) return d;
+        return (new Date(b.updatedAt ?? 0).getTime() || 0) - (new Date(a.updatedAt ?? 0).getTime() || 0);
+      });
+    }
+    // Root first, then folders alphabetically, with anything shared with me last.
+    return [...byFolder.entries()].sort(([a], [b]) => {
+      if (a === SHARED_GROUP) return 1;
+      if (b === SHARED_GROUP) return -1;
+      return a === '' ? -1 : b === '' ? 1 : a.localeCompare(b);
+    });
+  })();
+
+  // Shared projects cannot be dragged into folders: placement is the owner's.
+  const folderNames = [...new Set(projects.filter((p) => !p.shared)
+    .map((p) => p.folder || '').filter(Boolean))].sort();
+
+  const applyPlacement = async (id: string, placement: { folder?: string; sort_order?: number }) => {
+    // Optimistic: the list reorders immediately, and reloads from the server on failure.
+    setProjects((prev) => prev.map((p) => p.id === id ? {
+      ...p,
+      folder: placement.folder ?? p.folder,
+      sortOrder: placement.sort_order ?? p.sortOrder,
+    } : p));
+    try {
+      await api.setPlacement(id, placement);
+    } catch (err: any) {
+      setError(err.message || 'Could not move document');
+      loadProjects();
+    }
+  };
+
+  /** Drop `dragId` onto `targetId`: same folder, taking the target's slot. */
+  const handleReorderDrop = (targetId: string) => (e: React.DragEvent) => {
+    e.preventDefault();
+    const dragId = e.dataTransfer.getData('text/plain');
+    setDragOverId(null);
+    if (!dragId || dragId === targetId) return;
+    const target = projects.find((p) => p.id === targetId);
+    if (!target) return;
+
+    const siblings = (grouped.find(([f]) => f === (target.folder || ''))?.[1] ?? [])
+      .filter((p) => p.id !== dragId);
+    const at = siblings.findIndex((p) => p.id === targetId);
+    if (at < 0) return;
+    const reordered = [...siblings.slice(0, at), { id: dragId }, ...siblings.slice(at)];
+    // Renumber in tens so a later single move usually needs one write, not a full pass.
+    reordered.forEach((p, i) => {
+      const existing = projects.find((q) => q.id === p.id);
+      const next = (i + 1) * 10;
+      if (existing && (existing.sortOrder ?? 0) !== next) {
+        applyPlacement(p.id, p.id === dragId
+          ? { folder: target.folder || '', sort_order: next }
+          : { sort_order: next });
+      }
+    });
+  };
+
+  const handleMoveToFolder = async (folder: string) => {
+    if (!moveDialog) return;
+    const id = moveDialog.project.id;
+    setMoveDialog(null);
+    await applyPlacement(id, { folder, sort_order: 0 });
+  };
 
   const formatDate = (dateStr: string | null | undefined) => {
     if (!dateStr) return '—';
@@ -299,7 +405,7 @@ export function Home() {
               <input
                 id="file-input"
                 type="file"
-                accept=".doc,.docx"
+                accept=".pdf,.doc,.docx"
                 onChange={handleFileSelect}
                 style={{ display: 'none' }}
               />
@@ -444,40 +550,120 @@ export function Home() {
           </Box>
         ) : (
           <Box sx={{ display: 'flex', flexDirection: 'column' }}>
-            {filteredProjects.map((project) => (
-              <Box
-                key={project.id}
-                onClick={() => navigate(`/editor/${project.id}`)}
-                sx={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 2,
-                  px: 1.5,
-                  py: 1,
-                  borderRadius: '8px',
-                  cursor: 'pointer',
-                  transition: 'background 0.1s',
-                  '&:hover': { bgcolor: hoverBg },
-                  '&:hover .actions': { opacity: 1 },
-                }}
-              >
-                <Description sx={{ fontSize: 18, color: 'primary.main', opacity: 0.8 }} />
-                <Box sx={{ flex: 1, minWidth: 0 }}>
-                  <Typography sx={{ fontSize: 13 }} noWrap>
-                    {project.name}
-                  </Typography>
-                </Box>
-                <Typography sx={{ fontSize: 11, color: 'text.secondary', minWidth: 60 }}>
-                  {formatDate(project.updatedAt || project.createdAt)}
-                </Typography>
-                <IconButton
-                  className="actions"
-                  size="small"
-                  onClick={(e) => handleMenuOpen(e, project)}
-                  sx={{ opacity: 0, transition: 'opacity 0.1s', p: 0.5 }}
-                >
-                  <MoreVert sx={{ fontSize: 16 }} />
-                </IconButton>
+            {grouped.map(([folder, items]) => (
+              <Box key={folder || '__root__'} sx={{ display: 'flex', flexDirection: 'column' }}>
+                {folder && (
+                  <Box
+                    onClick={() => setCollapsed((prev) => {
+                      const next = new Set(prev);
+                      next.has(folder) ? next.delete(folder) : next.add(folder);
+                      return next;
+                    })}
+                    role="button"
+                    tabIndex={0}
+                    aria-expanded={!collapsed.has(folder)}
+                    aria-label={`${folder} folder, ${items.length} documents`}
+                    onKeyDown={(e: React.KeyboardEvent) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        setCollapsed((prev) => {
+                          const next = new Set(prev);
+                          next.has(folder) ? next.delete(folder) : next.add(folder);
+                          return next;
+                        });
+                      }
+                    }}
+                    sx={{
+                      display: 'flex', alignItems: 'center', gap: 1,
+                      px: 1.5, py: 0.75, mt: 1, cursor: 'pointer', borderRadius: '8px',
+                      '&:hover': { bgcolor: hoverBg },
+                    }}
+                  >
+                    <ChevronRight
+                      sx={{
+                        fontSize: 14, color: 'text.secondary',
+                        transform: collapsed.has(folder) ? 'none' : 'rotate(90deg)',
+                        transition: 'transform 0.15s',
+                      }}
+                    />
+                    <FolderOutlined sx={{ fontSize: 15, color: 'text.secondary' }} />
+                    <Typography sx={{ fontSize: 12, fontWeight: 600, color: 'text.primary', letterSpacing: '0.01em' }}>
+                      {folder}
+                    </Typography>
+                    <Box
+                      component="span"
+                      sx={{
+                        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                        minWidth: 18, height: 18, px: 0.6, borderRadius: '9px',
+                        bgcolor: countBg, color: 'text.secondary',
+                        fontSize: 10.5, fontWeight: 600, lineHeight: 1,
+                        fontVariantNumeric: 'tabular-nums',
+                      }}
+                    >
+                      {items.length}
+                    </Box>
+                  </Box>
+                )}
+
+                {!collapsed.has(folder) && items.map((project) => (
+                  <Box
+                    key={project.id}
+                    draggable
+                    onDragStart={(e) => { e.dataTransfer.setData('text/plain', project.id); e.dataTransfer.effectAllowed = 'move'; }}
+                    onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragOverId(project.id); }}
+                    onDragLeave={() => setDragOverId((cur) => cur === project.id ? null : cur)}
+                    onDrop={handleReorderDrop(project.id)}
+                    onDragEnd={() => setDragOverId(null)}
+                    onClick={() => navigate(`/editor/${project.id}`)}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Open ${project.name}`}
+                    onKeyDown={(e: React.KeyboardEvent) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        navigate(`/editor/${project.id}`);
+                      }
+                    }}
+                    sx={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 2,
+                      px: 1.5,
+                      py: 1,
+                      ml: folder ? 2.5 : 0,
+                      '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: '-2px' },
+                      borderLeft: folder ? `1px solid ${accentBorder}` : 'none',
+                      borderRadius: folder ? '0 8px 8px 0' : '8px',
+                      cursor: 'pointer',
+                      transition: 'background 0.1s',
+                      boxShadow: dragOverId === project.id ? `inset 0 2px 0 ${accentBorder}` : 'none',
+                      '&:hover': { bgcolor: hoverBg },
+                      '&:hover .actions': { opacity: 1 },
+                    }}
+                  >
+                    <Description sx={{ fontSize: 18, color: 'primary.main', opacity: 0.8 }} />
+                    <Box sx={{ flex: 1, minWidth: 0 }}>
+                      <Typography sx={{ fontSize: 13 }} noWrap>
+                        {project.name}
+                      </Typography>
+                    </Box>
+                    <Typography sx={{
+                      fontSize: 11, color: 'text.secondary', minWidth: 68,
+                      textAlign: 'right', fontVariantNumeric: 'tabular-nums', flexShrink: 0,
+                    }}>
+                      {formatDate(project.updatedAt || project.createdAt)}
+                    </Typography>
+                    <IconButton
+                      className="actions"
+                      size="small"
+                      aria-label={`Actions for ${project.name}`}
+                      onClick={(e) => handleMenuOpen(e, project)}
+                      sx={{ opacity: 0, transition: 'opacity 0.1s', p: 0.5 }}
+                    >
+                      <MoreVert sx={{ fontSize: 16 }} />
+                    </IconButton>
+                  </Box>
+                ))}
               </Box>
             ))}
           </Box>
@@ -496,13 +682,106 @@ export function Home() {
         <MenuItem onClick={handleDuplicate} sx={{ fontSize: 12 }}>
           <ContentCopy sx={{ mr: 1.5, fontSize: 14 }} /> Duplicate
         </MenuItem>
+        <MenuItem
+          onClick={() => { setShareProject(menuAnchor!.project); handleMenuClose(); }}
+          sx={{ fontSize: 12 }}
+        >
+          <PersonAdd sx={{ mr: 1.5, fontSize: 14 }} /> {menuAnchor?.project.shared ? 'People' : 'Share'}
+        </MenuItem>
+        {!menuAnchor?.project.shared && (
+          <MenuItem
+            onClick={() => {
+              setMoveDialog({ project: menuAnchor!.project });
+              setNewFolderName('');
+              handleMenuClose();
+            }}
+            sx={{ fontSize: 12 }}
+          >
+            <FolderOutlined sx={{ mr: 1.5, fontSize: 14 }} /> Move to folder
+          </MenuItem>
+        )}
         <MenuItem onClick={() => { api.downloadPdf(menuAnchor!.project.id, menuAnchor!.project.name); handleMenuClose(); }} sx={{ fontSize: 12 }}>
           <Download sx={{ mr: 1.5, fontSize: 14 }} /> Download
         </MenuItem>
-        <MenuItem onClick={handleDelete} sx={{ fontSize: 12, color: 'error.main' }}>
-          <Delete sx={{ mr: 1.5, fontSize: 14 }} /> Delete
-        </MenuItem>
+        {!menuAnchor?.project.shared && (
+          <MenuItem onClick={handleDelete} sx={{ fontSize: 12, color: 'error.main' }}>
+            <Delete sx={{ mr: 1.5, fontSize: 14 }} /> Delete
+          </MenuItem>
+        )}
       </Menu>
+
+      <ShareDialog
+        projectId={shareProject?.id ?? null}
+        projectName={shareProject?.name}
+        onClose={() => { setShareProject(null); loadProjects(); }}
+      />
+
+      <Dialog open={Boolean(moveDialog)} onClose={() => setMoveDialog(null)} maxWidth="xs" fullWidth>
+        <DialogTitle sx={{ fontSize: 14, fontWeight: 600 }}>
+          Move &ldquo;{moveDialog?.project.name}&rdquo;
+        </DialogTitle>
+        <DialogContent sx={{ display: 'flex', flexDirection: 'column', gap: 1, pb: 1 }}>
+          <List dense sx={{ py: 0 }}>
+            <ListItemButton
+              selected={!moveDialog?.project.folder}
+              onClick={() => handleMoveToFolder('')}
+              sx={{ borderRadius: '6px' }}
+            >
+              <Description sx={{ fontSize: 15, mr: 1.5, color: 'text.secondary' }} />
+              <ListItemText primaryTypographyProps={{ fontSize: 13 }} primary="All documents" />
+            </ListItemButton>
+            {folderNames.map((name) => (
+              <ListItemButton
+                key={name}
+                selected={moveDialog?.project.folder === name}
+                onClick={() => handleMoveToFolder(name)}
+                sx={{ borderRadius: '6px' }}
+              >
+                <FolderOutlined sx={{ fontSize: 15, mr: 1.5, color: 'text.secondary' }} />
+                <ListItemText primaryTypographyProps={{ fontSize: 13 }} primary={name} />
+              </ListItemButton>
+            ))}
+          </List>
+          <TextField
+            size="small"
+            fullWidth
+            sx={{ mt: 0.5 }}
+            label="New folder"
+            placeholder="e.g. thesis/chapters"
+            value={newFolderName}
+            onChange={(e) => setNewFolderName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && newFolderName.trim()) handleMoveToFolder(newFolderName.trim());
+            }}
+            InputProps={{ sx: { fontSize: 13 } }}
+            InputLabelProps={{ sx: { fontSize: 13 } }}
+            helperText="Use / to nest, e.g. thesis/chapters"
+            FormHelperTextProps={{ sx: { fontSize: 11 } }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setMoveDialog(null)} size="small" sx={{ fontSize: 12 }}>Cancel</Button>
+          <Button
+            onClick={() => handleMoveToFolder(newFolderName.trim())}
+            disabled={!newFolderName.trim()}
+            size="small"
+            variant="contained"
+            sx={{ fontSize: 12 }}
+          >
+            Move
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <ConfirmDialog
+        open={Boolean(deleteDialog)}
+        title="Delete document"
+        message={`Delete "${deleteDialog?.project.name}"? This cannot be undone.`}
+        confirmLabel="Delete"
+        destructive
+        onConfirm={handleConfirmDelete}
+        onCancel={() => setDeleteDialog(null)}
+      />
 
       {missingImagesDialog && (
         <MissingImagesDialog

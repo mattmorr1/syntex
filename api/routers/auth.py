@@ -1,5 +1,6 @@
 import os
 import logging
+import secrets
 from datetime import datetime, timedelta
 from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -12,7 +13,9 @@ from slowapi.util import get_remote_address
 
 from api.models.schemas import (
     LoginRequest, RegisterRequest, ResetPasswordRequest,
-    AuthResponse, UserResponse, TokenUsage
+    AuthResponse, UserResponse, TokenUsage,
+    UpdateProviderKeyRequest, UpdatePreferredProviderRequest, UserSettingsResponse,
+    AccessRequestCreate,
 )
 from api.services.firestore import db_service
 from config import Config
@@ -24,9 +27,9 @@ security = HTTPBearer(auto_error=False)
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 limiter = Limiter(key_func=get_remote_address)
 
-ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "mmorristwo@gmail.com").lower().strip()
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "matt")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "password")
+ADMIN_EMAIL = Config.ADMIN_EMAIL.lower().strip()
+ADMIN_USERNAME = Config.ADMIN_USERNAME
+ADMIN_PASSWORD = Config.ADMIN_PASSWORD
 INVITE_ONLY = os.getenv("INVITE_ONLY", "true").lower() == "true"
 
 
@@ -74,14 +77,14 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
             await db_service.update_last_accessed(decoded["uid"])
             return user
         return {"uid": decoded["uid"], "email": decoded.get("email", ""), "role": "user"}
-    except auth.InvalidIdTokenError:
-        logger.warning("Invalid Firebase ID token presented")
-        raise HTTPException(status_code=401, detail="Invalid token")
     except auth.ExpiredIdTokenError:
         logger.info("Expired Firebase ID token presented")
         raise HTTPException(status_code=401, detail="Token expired")
     except Exception:
-        # Not a Firebase token — try local JWT (for admin login)
+        # Anything else means it is not a Firebase ID token — including
+        # InvalidIdTokenError, which is what a locally-signed admin JWT raises ("no kid
+        # claim"). Catching that as a hard 401 made the fallback below unreachable for the
+        # only tokens it exists to serve.
         try:
             payload = verify_jwt_token(token)
             uid = payload["sub"]
@@ -106,7 +109,7 @@ async def get_admin_user(user: dict = Depends(get_current_user)):
 async def login(request: Request, body: LoginRequest):
     request_email = body.email.lower().strip()
 
-    if request_email == ADMIN_EMAIL and body.password == ADMIN_PASSWORD:
+    if request_email == ADMIN_EMAIL and secrets.compare_digest(body.password, ADMIN_PASSWORD):
         user = await db_service.get_user_by_email(ADMIN_EMAIL)
         if not user:
             user = await db_service.create_user(
@@ -143,34 +146,12 @@ async def login(request: Request, body: LoginRequest):
             )
         )
 
-    try:
-        user_record = auth.get_user_by_email(body.email)
-        user = await db_service.get_user(user_record.uid)
-
-        if not user:
-            user = await db_service.create_user(
-                uid=user_record.uid,
-                email=body.email,
-                username=body.email.split("@")[0]
-            )
-
-        custom_token = auth.create_custom_token(user_record.uid)
-
-        return AuthResponse(
-            token=custom_token.decode() if isinstance(custom_token, bytes) else custom_token,
-            user=UserResponse(
-                uid=user["uid"],
-                email=user["email"],
-                username=user["username"],
-                role=user.get("role", "user"),
-                tokensUsed=TokenUsage(**user.get("tokens_used", {}))
-            )
-        )
-    except auth.UserNotFoundError:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    except Exception as e:
-        logger.error(f"Login error: {e}")
-        raise HTTPException(status_code=401, detail="Login failed")
+    # Everyone else authenticates against Firebase in the browser and presents the
+    # resulting ID token; the profile then comes from /auth/me. Nothing here can check a
+    # password -- the Admin SDK has no such call -- so there is nothing to issue a token
+    # against, and minting one on an email lookup alone would admit anyone who knows an
+    # address.
+    raise HTTPException(status_code=401, detail="Invalid credentials")
 
 
 @router.post("/register", response_model=AuthResponse)
@@ -332,3 +313,66 @@ async def get_me(user: dict = Depends(get_current_user)):
         role=user.get("role", "user"),
         tokensUsed=TokenUsage(**user.get("tokens_used", {"total": 0, "flash": 0, "pro": 0}))
     )
+
+
+# ─── Settings endpoints ───────────────────────────────────────────────────────
+
+@router.get("/settings", response_model=UserSettingsResponse)
+async def get_settings(user: dict = Depends(get_current_user)):
+    settings = user.get("settings") or {}
+    providers = settings.get("providers") or {}
+    configured = {p: bool(providers.get(p)) for p in ("gemini", "openai", "anthropic", "mistral")}
+    return UserSettingsResponse(
+        preferred_provider=settings.get("preferred_provider", "gemini"),
+        providers_configured=configured,
+    )
+
+
+@router.put("/settings/provider-key")
+async def save_provider_key(body: UpdateProviderKeyRequest, user: dict = Depends(get_current_user)):
+    from api.services.llm_provider import encrypt_key
+    try:
+        encrypted = encrypt_key(body.api_key)
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    await db_service.update_provider_key(user["uid"], body.provider, encrypted)
+    return {"message": f"{body.provider} API key saved"}
+
+
+@router.delete("/settings/provider-key/{provider}")
+async def remove_provider_key(provider: str, user: dict = Depends(get_current_user)):
+    valid = ["gemini", "openai", "anthropic", "mistral"]
+    if provider not in valid:
+        raise HTTPException(status_code=400, detail="Unknown provider")
+    await db_service.update_provider_key(user["uid"], provider, None)
+    return {"message": f"{provider} API key removed"}
+
+
+@router.put("/settings/preferred-provider")
+async def set_preferred_provider(body: UpdatePreferredProviderRequest, user: dict = Depends(get_current_user)):
+    await db_service.update_preferred_provider(user["uid"], body.provider)
+    return {"message": f"Preferred provider set to {body.provider}"}
+
+
+# ─── Request access endpoint ──────────────────────────────────────────────────
+
+@router.post("/request-access")
+@limiter.limit("3/hour")
+async def request_access(request: Request, body: AccessRequestCreate):
+    email = body.email.lower().strip()
+
+    existing_user = await db_service.get_user_by_email(email)
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    existing_req = await db_service.get_access_request_by_email(email)
+    if existing_req and existing_req.get("status") == "pending":
+        raise HTTPException(status_code=400, detail="A request for this email is already pending")
+
+    req = await db_service.create_access_request(
+        name=body.name,
+        email=email,
+        institution=body.institution,
+        use_case=body.use_case,
+    )
+    return {"message": "Request submitted successfully", "id": req["id"]}

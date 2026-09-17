@@ -1,19 +1,53 @@
 **to do:**
-- abstracting layer for ai agent (langchain?)
-    - api interchanging?
-- customization with invites
-- promote people to admin?
-- more efficient way to create accounts?
-- token cap
     - monetization
     - cost model
-- write readme, create notion site for explain use case
-- click in pdf viewer references editor too.
-- optimize structued output
-- folder organizations
-- sharing/cowork
-- Order of documents?
-- random fragmentation in generation with batches
-- tab accept autocomplete
+- check and audit costs for hosting ? can this not be cloudrun and instead some sort of
+  elastic compute?
 
 deploy: gcloud builds submit --config=config/cloudbuild.yaml
+collab hub deploys separately: needs min-instances=1 + session affinity
+
+
+**done (v1.2)** — see the execution plan for detail:
+- write readme, create notion site for explain use case  -> README.md + docs/use-case.md
+- click in pdf viewer references editor too.             -> SyncTeX both directions, Ctrl+J
+- optimize structured output                             -> pooled client, header auth,
+                                                            retries, propertyOrdering
+- folder organizations                                   -> folder + sort_order, drag to reorder
+- sharing/cowork                                         -> Yjs + collab/ hub, JWT-gated
+                                                            (transport still TBD)
+- Order of documents?                                    -> read as Home ordering; say if
+                                                            you meant \input compile order
+- random fragmentation in generation with batches        -> anchors, not char offsets
+- tab accept autocomplete                                -> Monaco inline completions
+
+
+**done in gcloud (project uea-app-470816):**
+- jwt-secret + admin-password created in Secret Manager; compute SA granted
+  secretmanager.secretAccessor on both (scoped to the secrets, not project-wide)
+- JWT_SECRET attached to the live uea-app service -> revision 00089.
+  Production had been signing tokens with the public default from config.py.
+  Verified closed: a token forged with that default now gets 401 from /auth/me.
+  admin-password holds the same value the service already used, so admin sign-in
+  is unchanged.
+- lifecycle rule on the storage bucket: delete under builds/ after 1 day.
+  Prefix-scoped; projects/ (user figures) is not matched.
+- leaked gemini key from commit 2d22006 tested against the API: HTTP 400, dead.
+  Control test with the current key returned 200, so the method is sound.
+- DEPLOYED: build 6ffaef5a, revision uea-app-00090-s9n serving 100%.
+  Verified live: /health 200, app shell 200, forged-default token still 401, and the new
+  routes (synctex, synctex/forward, collab-token, placement) all return 401 rather than
+  falling through to the SPA catch-all, which is what proves they are deployed.
+  FERNET_KEY in env.yaml was checked against the live service before deploying and
+  matched, so stored provider keys survived the env replacement.
+
+**open, needs you:**
+- revoke the SMTP app password from commit 2d22006 (Google account, not gcloud).
+  Email now prefers RESEND_API_KEY; set that + EMAIL_FROM and the app password can be
+  revoked outright rather than replaced.
+- the admin password is also in that commit and still in use — change it, then update
+  the admin-password secret
+- pick a collaboration transport: managed (needs an account only you can create) vs the
+  self-hosted hub already in collab/ (needs its own service, min-instances=1,
+  session affinity, and the same JWT_SECRET)
+- confirm GEMINI_FLASH_MODEL / GEMINI_PRO_MODEL ids in config.py are current

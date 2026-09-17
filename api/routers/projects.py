@@ -1,29 +1,40 @@
-from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, Request
 from typing import Annotated, List, Optional
+import asyncio
 import tempfile
 import os
 import re
 import json as json_module
 import zipfile
 import base64
+import html
 import logging
 
 from api.models.schemas import (
-    ProjectCreate, ProjectUpdate, ProjectResponse, ProjectFile, FeedbackRequest
+    ProjectCreate, ProjectUpdate, ProjectResponse, ProjectSummary, ProjectPlacement,
+    ProjectFile, FeedbackRequest, CollabSyncRequest, CollabSnapshotRequest,
+    AddMemberRequest
 )
 from api.services.firestore import db_service
-from api.services.gemini import gemini_service
+from api.services.gemini import gemini_service, MAX_SOURCE_CHARS
 from api.services.latex import latex_service
-from api.routers.auth import get_current_user
+from api.services.email import send_email
+from api.routers.auth import get_current_user, limiter
+from config import Config
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
 
-@router.get("", response_model=List[ProjectResponse])
+# Collaboration tokens outlive a working session but not a day; a revoked collaborator
+# loses access at expiry rather than immediately, which is the tradeoff for a hub that
+# holds no database connection.
+COLLAB_TOKEN_HOURS = int(os.getenv("COLLAB_TOKEN_HOURS", "8"))
+
+@router.get("", response_model=List[ProjectSummary])
 async def list_projects(user: dict = Depends(get_current_user)):
     projects = await db_service.get_user_projects(user["uid"])
-    return [_format_project(p) for p in projects]
+    return [_format_summary(p) for p in projects]
 
 @router.get("/{project_id}", response_model=ProjectResponse)
 async def get_project(project_id: str, user: dict = Depends(get_current_user)):
@@ -56,15 +67,23 @@ async def create_project(request: ProjectCreate, user: dict = Depends(get_curren
 
 @router.post("/save-project")
 async def save_project(request: ProjectUpdate, user: dict = Depends(get_current_user)):
-    from datetime import datetime, timezone
     files = [f.dict() for f in request.files]
-    success = await db_service.update_project(request.project_id, user["uid"], files)
+    result = await db_service.update_project(
+        request.project_id, user["uid"], files, request.base_updated_at
+    )
 
-    if not success:
+    if not result["ok"]:
+        if result["reason"] == "conflict":
+            # Someone else wrote since this client last read. Hand back their timestamp
+            # so the client can reload rather than silently overwriting their work.
+            raise HTTPException(
+                status_code=409,
+                detail={"message": "Project changed elsewhere", "updated_at": result.get("updated_at")},
+            )
         raise HTTPException(status_code=404, detail="Project not found")
 
-    updated_at = datetime.now(timezone.utc).isoformat()
-    return {"message": "Project saved", "project_id": request.project_id, "updated_at": updated_at}
+    return {"message": "Project saved", "project_id": request.project_id,
+            "updated_at": result["updated_at"]}
 
 @router.patch("/{project_id}/rename")
 async def rename_project(project_id: str, request: dict, user: dict = Depends(get_current_user)):
@@ -78,6 +97,143 @@ async def rename_project(project_id: str, request: dict, user: dict = Depends(ge
         raise HTTPException(status_code=404, detail="Project not found")
     
     return {"message": "Project renamed", "name": name.strip()}
+
+@router.get("/{project_id}/collab-token")
+async def collab_token(project_id: str, user: dict = Depends(get_current_user)):
+    """
+    Short-lived token admitting this user to this project's collaboration room.
+
+    The hub cannot reach Firestore, so access is decided here — where ownership is
+    already known — and asserted to the hub as a signed claim. The room is named in
+    the token so a token for one project cannot open another.
+    """
+    import jwt
+    from datetime import datetime, timedelta
+    from config import Config
+
+    project = await db_service.get_project(project_id, user["uid"])
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    now = datetime.utcnow()
+    token = jwt.encode(
+        {
+            "sub": user["uid"],
+            "room": f"project:{project_id}",
+            "name": user.get("username") or user.get("email") or "Anonymous",
+            "iat": now,
+            "exp": now + timedelta(hours=COLLAB_TOKEN_HOURS),
+        },
+        Config.JWT_SECRET,
+        algorithm=Config.ALGORITHM,
+    )
+    return {"token": token, "room": f"project:{project_id}"}
+
+@router.post("/{project_id}/collab/sync")
+async def collab_sync(project_id: str, body: CollabSyncRequest,
+                      user: dict = Depends(get_current_user)):
+    """
+    One round trip of the collaboration relay: push this client's update, pull everyone
+    else's, and refresh presence. Deliberately not a socket — the room lives in Firestore
+    so the service keeps scaling to zero between sessions.
+    """
+    if not await db_service.get_project(project_id, user["uid"]):
+        raise HTTPException(status_code=404, detail="Project not found")
+    presence = dict(body.presence or {})
+    # uid, not just a name: clientID changes on every mount, so without an identity to
+    # collapse on, one person in two tabs reads as two collaborators.
+    presence["uid"] = user["uid"]
+    presence["name"] = user.get("username") or user.get("email") or "Anonymous"
+    return await db_service.sync_collab_room(
+        project_id, body.client_id, body.since, body.update, presence, body.leave
+    )
+
+@router.post("/{project_id}/collab/snapshot")
+async def collab_snapshot(project_id: str, body: CollabSnapshotRequest,
+                          user: dict = Depends(get_current_user)):
+    """Fold the delta tail into a merged state so a late joiner replays less."""
+    if not await db_service.get_project(project_id, user["uid"]):
+        raise HTTPException(status_code=404, detail="Project not found")
+    saved = await db_service.save_collab_snapshot(project_id, body.snapshot, body.up_to)
+    return {"saved": saved}
+
+@router.get("/{project_id}/members")
+async def list_members(project_id: str, user: dict = Depends(get_current_user)):
+    """Everyone with access to the project, owner first. Visible to owner and members alike."""
+    project = await db_service.get_project(project_id, user["uid"])
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    async def describe(uid: str, role: str) -> dict:
+        account = await db_service.get_user(uid)
+        return {
+            "uid": uid,
+            "role": role,
+            "email": (account or {}).get("email", ""),
+            "username": (account or {}).get("username", ""),
+        }
+
+    owner = await describe(project["user_id"], "owner")
+    members = [await describe(uid, "editor") for uid in (project.get("member_uids") or [])]
+    return {"members": [owner, *members], "is_owner": project["user_id"] == user["uid"]}
+
+@router.post("/{project_id}/members")
+@limiter.limit("20/minute")
+async def add_member(request: Request, project_id: str, body: AddMemberRequest,
+                     user: dict = Depends(get_current_user)):
+    """
+    Share with an existing account. Rate-limited because the response distinguishes a
+    registered address from an unregistered one, which is inherent to sharing by email but
+    should not be free to enumerate.
+    """
+    account = await db_service.get_user_by_email(body.email.lower().strip())
+    if not account:
+        raise HTTPException(
+            status_code=404,
+            detail="No account with that email. Ask them to sign up first, then share.",
+        )
+
+    outcome = await db_service.add_project_member(project_id, user["uid"], account["uid"])
+    if outcome == "not_found":
+        raise HTTPException(status_code=404, detail="Project not found")
+    if outcome == "not_owner":
+        raise HTTPException(status_code=403, detail="Only the owner can share this project")
+
+    if outcome == "ok":
+        project = await db_service.get_project(project_id, user["uid"])
+        sharer = user.get("username") or user.get("email") or "Someone"
+        name = html.escape(project["name"] if project else "a project")
+        await send_email(
+            account["email"],
+            f"{html.escape(sharer)} shared a document with you",
+            f"<p>{html.escape(sharer)} shared <strong>{name}</strong> with you on Syntex.</p>"
+            f"<p><a href=\"{Config.APP_URL}\">Open it</a></p>",
+        )
+    return {"uid": account["uid"], "email": account["email"], "status": outcome}
+
+@router.delete("/{project_id}/members/{member_uid}")
+async def remove_member(project_id: str, member_uid: str,
+                        user: dict = Depends(get_current_user)):
+    """The owner removes anyone; a member removes themselves. The owner is not a member."""
+    outcome = await db_service.remove_project_member(project_id, user["uid"], member_uid)
+    if outcome == "not_found":
+        raise HTTPException(status_code=404, detail="Project not found")
+    if outcome == "forbidden":
+        raise HTTPException(status_code=403, detail="Only the owner can remove other members")
+    return {"removed": member_uid}
+
+@router.patch("/{project_id}/placement")
+async def set_placement(project_id: str, body: ProjectPlacement,
+                        user: dict = Depends(get_current_user)):
+    """Move a project to a folder and/or set its position in the list."""
+    if body.folder is None and body.sort_order is None:
+        raise HTTPException(status_code=400, detail="Provide folder, sort_order, or both")
+    ok = await db_service.set_project_placement(
+        project_id, user["uid"], body.folder, body.sort_order
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return {"project_id": project_id, "folder": body.folder, "sort_order": body.sort_order}
 
 @router.post("/duplicate-project/{project_id}")
 async def duplicate_project(project_id: str, user: dict = Depends(get_current_user)):
@@ -133,7 +289,7 @@ async def add_images_to_project(
             counter += 1
         # Upload to GCS instead of storing base64 in Firestore
         try:
-            gcs_ref = gcs_upload(raw, project_id, candidate, mime)
+            gcs_ref = await asyncio.to_thread(gcs_upload, raw, project_id, candidate, mime)
         except Exception as gcs_err:
             logger.error(f"GCS upload failed for {candidate}: {gcs_err}")
             raise HTTPException(status_code=502, detail="Image storage failed")
@@ -141,8 +297,23 @@ async def add_images_to_project(
         existing_names.add(candidate)
         added.append(candidate)
 
-    await db_service.update_project(project_id, user["uid"], new_files)
+    result = await db_service.update_project(project_id, user["uid"], new_files)
+    if not result["ok"]:
+        raise HTTPException(status_code=404, detail="Project not found")
     return {"added": added, "project_id": project_id}
+
+def _format_summary(project: dict) -> ProjectSummary:
+    return ProjectSummary(
+        id=project["id"],
+        name=project.get("name", "Untitled"),
+        main_file=project.get("main_file", "main.tex"),
+        theme=project.get("theme", "report"),
+        custom_theme=project.get("custom_theme"),
+        folder=project.get("folder") or "",
+        sort_order=project.get("sort_order") or 0,
+        created_at=project.get("created_at"),
+        updated_at=project.get("updated_at"),
+    )
 
 def _format_project(project: dict) -> ProjectResponse:
     files = project.get("files", [])
@@ -200,6 +371,11 @@ async def upload_file(
 
     try:
         content = await file.read()
+        if len(content) > Config.MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File exceeds the {Config.MAX_FILE_SIZE // (1024 * 1024)}MB limit",
+            )
         with open(file_path, "wb") as f:
             f.write(content)
 
@@ -258,9 +434,31 @@ async def upload_file(
             logger.warning(f"Document extraction failed, falling back to raw text: {extract_err}")
             text_content = content.decode("utf-8", errors="ignore")[:5000]
 
+        img_ext_map = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/bmp": "bmp"}
+        # Named before generation, not after: the model has to write these exact filenames
+        # or \includegraphics points at a file the project does not contain.
+        figures: list = []
+        for idx, img_data in enumerate(extracted_images):
+            if not img_data.startswith("data:"):
+                continue
+            mime = img_data.split(";")[0][5:]
+            figures.append((f"figure{idx + 1}.{img_ext_map.get(mime, 'png')}", mime, img_data))
+        figure_names = [name for name, _, _ in figures]
+
+        # For a PDF, the text extract is only a map: it gives deterministic offsets for the
+        # section anchors. The file itself carries the maths, tables and layout that
+        # page.get_text() drops, so it goes to the model as well.
+        source_pdf = (
+            f"data:application/pdf;base64,{base64.b64encode(content).decode()}"
+            if file.filename.lower().endswith(".pdf") else None
+        )
+
+        truncated = len(text_content) > MAX_SOURCE_CHARS
         logger.info(
             f"Starting generation: file={file.filename!r}, "
             f"text_len={len(text_content)}, images={len(extracted_images)}, "
+            f"figures={figure_names}, truncated={truncated}, "
+            f"native_pdf={bool(source_pdf)}, "
             f"has_cls={bool(custom_cls and custom_cls.strip())}"
         )
 
@@ -272,7 +470,9 @@ async def upload_file(
                 custom_theme,
                 custom_prompt=custom_prompt,
                 custom_preamble=custom_preamble,
-                images=extracted_images or None,
+                images=[data for _, _, data in figures] or None,
+                image_names=figure_names or None,
+                source_pdf=source_pdf,
                 custom_cls_content=custom_cls if custom_cls and custom_cls.strip() else None,
                 max_tokens=max_tokens if max_tokens else 65536,
             )
@@ -331,22 +531,13 @@ async def upload_file(
         ]
 
         # Add embedded images from the source document as project files (via GCS)
-        img_ext_map = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/bmp": "bmp"}
-        embedded_image_names: set = set()
-        # We need a temporary project ID for GCS paths — use a placeholder; real ID assigned after create
-        # Instead, collect image bytes and store after project creation
         pending_images: list = []
-        for idx, img_data in enumerate(extracted_images):
-            if not img_data.startswith("data:"):
-                continue
-            mime = img_data.split(";")[0][5:]
-            ext = img_ext_map.get(mime, "png")
-            img_name = f"figure{idx + 1}.{ext}"
+        for img_name, mime, img_data in figures:
             b64_data = img_data.split(",", 1)[1] if "," in img_data else img_data
-            import base64 as _base64
-            pending_images.append({"name": img_name, "mime": mime, "ext": ext,
-                                    "data": _base64.b64decode(b64_data)})
-            embedded_image_names.add(img_name)
+            pending_images.append({"name": img_name, "mime": mime,
+                                   "ext": img_ext_map.get(mime, "png"),
+                                   "data": base64.b64decode(b64_data)})
+        embedded_image_names: set = {name for name, _, _ in figures}
 
         # Add custom class file if provided
         if custom_cls and custom_cls.strip():
@@ -369,12 +560,16 @@ async def upload_file(
             updated_files = list(project_files)
             for img in pending_images:
                 try:
-                    gcs_ref = gcs_upload(img["data"], project_id, img["name"], img["mime"])
+                    gcs_ref = await asyncio.to_thread(
+                        gcs_upload, img["data"], project_id, img["name"], img["mime"]
+                    )
                     updated_files.append({"name": img["name"], "content": gcs_ref, "type": img["ext"]})
                 except Exception as img_err:
                     logger.warning(f"Failed to upload embedded image {img['name']}: {img_err}")
             if len(updated_files) > len(project_files):
-                await db_service.update_project(project_id, user["uid"], updated_files)
+                result = await db_service.update_project(project_id, user["uid"], updated_files)
+                if not result["ok"]:
+                    logger.error(f"Could not attach embedded images to {project_id}: {result['reason']}")
 
         # Detect image filenames referenced in LaTeX that are not in the project
         image_refs = gemini_service._extract_image_references(latex_content)
@@ -387,6 +582,8 @@ async def upload_file(
             "project_id": project_id,
             "tokens_used": tokens,
             "missing_images": missing_images,
+            "truncated": truncated,
+            "source_chars_used": min(len(text_content), MAX_SOURCE_CHARS),
         }
 
     finally:

@@ -19,8 +19,7 @@ export function useAuth() {
     if (firebaseEnabled) {
       const idToken = await loginWithEmail(email, password);
       setToken(idToken);
-      const response = await api.login(email, password);
-      setUser(response.user);
+      setUser(await api.me());
     } else {
       const response = await api.login(email, password);
       setToken(response.token);

@@ -199,9 +199,9 @@ export function Login() {
                 </Button>
 
                 <Typography sx={{ fontSize: 13, textAlign: 'center' }}>
-                  Don't have an account?{' '}
-                  <Link component={RouterLink} to="/register">
-                    Sign up
+                  Need access?{' '}
+                  <Link component={RouterLink} to="/request-access">
+                    Request access
                   </Link>
                 </Typography>
               </Box>

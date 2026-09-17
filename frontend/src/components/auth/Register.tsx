@@ -29,7 +29,6 @@ export function Register() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
-  const [needsInvite, setNeedsInvite] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -64,7 +63,6 @@ export function Register() {
       await loginWithGoogle(inviteCode || undefined);
     } catch (err: any) {
       if (err.message === 'INVITE_REQUIRED') {
-        setNeedsInvite(true);
         setError('Please enter an invite code to create an account');
       } else {
         setError(err.message || 'Google signup failed');

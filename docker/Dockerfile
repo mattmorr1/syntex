@@ -28,6 +28,7 @@ FROM python:3.11-slim
 # Install lightweight LaTeX (English only)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     texlive-base \
+    texlive-binaries \
     texlive-latex-base \
     texlive-latex-recommended \
     texlive-latex-extra \

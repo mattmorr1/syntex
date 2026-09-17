@@ -6,10 +6,21 @@ from datetime import datetime
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+import logging
 import os
 import sys
 
 from config import Config
+
+# Without this the root logger has no handler, so every logger.error/warning in the app is
+# dropped and only uvicorn's access lines reach Cloud Logging — which hid a failing email
+# send entirely. force=True because uvicorn configures logging before this runs.
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(levelname)s %(name)s %(message)s",
+    stream=sys.stdout,
+    force=True,
+)
 
 print(f"Starting syntex...")
 print(f"Python path: {sys.path}")
@@ -82,6 +93,11 @@ async def startup_event():
     from api.services.firestore import db_service
     db_service._ensure_initialized()
     print(f"App started successfully on port {os.environ.get('PORT', '8080')}")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    from api.services.gemini import gemini_service
+    await gemini_service.aclose()
 
 @app.get("/health")
 async def health_check():
