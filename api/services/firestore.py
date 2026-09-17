@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
 import firebase_admin
 from firebase_admin import credentials, firestore, auth
+from google.cloud.firestore_v1.base_query import FieldFilter
 from config import Config
 
 
@@ -154,7 +155,7 @@ class FirestoreService:
     def get_user_by_email(self, email: str) -> Optional[Dict]:
         self._ensure_initialized()
         if self.enabled:
-            users = self.db.collection("users").where("email", "==", email).limit(1).stream()
+            users = self.db.collection("users").where(filter=FieldFilter("email", "==", email)).limit(1).stream()
             for user in users:
                 data = user.to_dict()
                 data["uid"] = user.id
@@ -350,7 +351,7 @@ class FirestoreService:
         if self.enabled:
             query = self.db.collection("access_requests")
             if status:
-                query = query.where("status", "==", status)
+                query = query.where(filter=FieldFilter("status", "==", status))
             results = []
             for doc in query.order_by("created_at", direction=firestore.Query.DESCENDING).stream():
                 d = doc.to_dict()
@@ -378,7 +379,7 @@ class FirestoreService:
     def get_access_request_by_email(self, email: str) -> Optional[Dict]:
         self._ensure_initialized()
         if self.enabled:
-            for doc in self.db.collection("access_requests").where("email", "==", email).limit(1).stream():
+            for doc in self.db.collection("access_requests").where(filter=FieldFilter("email", "==", email)).limit(1).stream():
                 d = doc.to_dict()
                 d["id"] = doc.id
                 return d
@@ -458,8 +459,8 @@ class FirestoreService:
             # single index scan. The owner is never in member_uids, so overlap is not
             # expected, but the dict keyed by id makes a duplicate impossible anyway.
             found: Dict[str, Dict] = {}
-            for query in (col.where("user_id", "==", uid).select(mask),
-                          col.where("member_uids", "array_contains", uid).select(mask)):
+            for query in (col.where(filter=FieldFilter("user_id", "==", uid)).select(mask),
+                          col.where(filter=FieldFilter("member_uids", "array_contains", uid)).select(mask)):
                 for doc in query.stream():
                     found[doc.id] = {"id": doc.id, **serialize_timestamps(doc.to_dict())}
             return list(found.values())
@@ -681,9 +682,9 @@ class FirestoreService:
         self._ensure_initialized()
         if self.enabled:
             chats = []
-            query = self.db.collection("chats").where("uid", "==", uid)
+            query = self.db.collection("chats").where(filter=FieldFilter("uid", "==", uid))
             if project_id:
-                query = query.where("project_id", "==", project_id)
+                query = query.where(filter=FieldFilter("project_id", "==", project_id))
             for doc in query.order_by("datetime", direction=firestore.Query.DESCENDING).limit(50).stream():
                 data = doc.to_dict()
                 data["id"] = doc.id
