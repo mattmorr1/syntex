@@ -1,12 +1,10 @@
 # Syntex
 
-An AI-assisted LaTeX editor for academic writing. Upload a Word document and get back a
-compiled, structured LaTeX paper — then keep editing it in a browser editor that compiles
-to PDF, jumps between source and output, and can rewrite selections on request.
+An AI-assisted LaTeX editor for academic writing, primarily for use in Boston University Undergraduate Economic Journal (BUUEJ). I built this tool as a major pain point as part of the layout editor process and it has helped significantly. Upload a Word document and an optional template and get back a compiled, structured LaTeX paper. From there, you can edit alongside an inline AI code editor to speed up changes and edit in formulas and tables in natural language.
 
 ---
 
-## What it does
+## Quick Summary!
 
 **Turns a `.docx` or `.pdf` into a real LaTeX project.** Upload a draft; Syntex extracts the
 text and embedded images, plans a document skeleton, fills each section, and returns a project with
@@ -30,8 +28,7 @@ Starting templates: `report`, `journal`, `problem_set`, `thesis`, `letter`.
 
 ## How generation works
 
-Long documents are not generated in one shot — a single pass runs out of output tokens
-partway through a paper and truncates.
+Long documents are not generated in one shot. Thus, we batch into multiple passes. Here is a sample of what that looks like. 
 
 ```
 .docx/.pdf ─► extract text + images (python-docx, PyMuPDF)
@@ -41,8 +38,8 @@ partway through a paper and truncates.
       ─► stitch ─► artifact cleanup ─► compile
 ```
 
-Extraction reads `paragraphs` and `tables` only, so Word's native equation objects do not
-survive the conversion — worth knowing before pointing a maths-heavy paper at it.
+Note: Extraction reads `paragraphs` and `tables` only, so Word's native equation objects do not
+survive the conversion (WIP!!). 
 
 **Sections are located by anchor, not offset.** Pass 1 returns, for each section, a
 verbatim quote of the source text where that section begins. Python then finds those
@@ -58,7 +55,7 @@ out of guesses.
 
 ---
 
-## Layout
+## Filesystem
 
 ```
 api/          FastAPI backend
@@ -106,20 +103,6 @@ cd collab && npm install && npm start          # ws://localhost:1234
 # then set VITE_COLLAB_URL=ws://localhost:1234 in frontend/.env
 ```
 
-### Checks
-
-```bash
-cd frontend && npx tsc --noEmit && npm run build
-```
-
----
-
-## Deploying
-
-```bash
-gcloud builds submit --config=config/cloudbuild.yaml
-```
-
 Builds the image (Kaniko, cached — TeX Live is a slow layer) and deploys to Cloud Run.
 
 The collaboration hub is **not** part of that deploy. It holds long-lived websocket
@@ -135,7 +118,7 @@ one project cannot open another.
 
 ---
 
-## Configuration
+## Secrets Guide (also in example env.yaml)
 
 Non-secret settings live in `config/env.yaml`, which is **not** tracked in git — start
 from `config/envexample.yaml`.
@@ -172,13 +155,7 @@ secret. That is deliberate: a default signing key is a default that signs valid 
 Rotating `FERNET_KEY` makes every stored user API key permanently undecryptable. Move it
 between environments; do not regenerate it.
 
-### Bucket lifecycle
-
-Compiled PDFs and SyncTeX data are written to `builds/` in the storage bucket so that any
-instance can serve a build any instance produced. Nothing expires them — set a lifecycle
-rule on that prefix (a day is generous) or the bucket grows without bound.
-
----
+--
 
 ## Notes
 
