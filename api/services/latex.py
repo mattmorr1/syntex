@@ -28,11 +28,18 @@ class LaTeXService:
                       ) -> Tuple[bool, Optional[bytes], Optional[str], Optional[bytes]]:
         """Returns (success, pdf_bytes, error, synctex_gz_bytes)."""
         async with self._slots:
-            return await asyncio.to_thread(self._compile_sync, files, main_file)
+            return (await asyncio.to_thread(self._compile_sync, files, main_file))[:4]
 
-    def _compile_sync(self, files: List[Dict], main_file: str
-                      ) -> Tuple[bool, Optional[bytes], Optional[str], Optional[bytes]]:
+    async def compile_log(self, files: List[Dict], main_file: str) -> Tuple[bool, str]:
+        """Verification compile: no -halt-on-error so nonstopmode records every error; returns (pdf_produced, log)."""
+        async with self._slots:
+            success, _, error, _, log = await asyncio.to_thread(self._compile_sync, files, main_file, False)
+        return success, log or error or ""
+
+    def _compile_sync(self, files: List[Dict], main_file: str, halt: bool = True
+                      ) -> Tuple[bool, Optional[bytes], Optional[str], Optional[bytes], Optional[str]]:
         temp_dir = tempfile.mkdtemp()
+        compiler = self.compiler
 
         try:
 
@@ -64,15 +71,16 @@ class LaTeXService:
             
             main_path = self._safe_path(temp_dir, main_file)
             if not os.path.exists(main_path):
-                return False, None, f"Main file not found: {main_file}", None
+                return False, None, f"Main file not found: {main_file}", None, None
 
             # Determine compiler based on document
             compiler = self._detect_compiler(files, main_file)
+            cmd = [compiler, "-synctex=1", "-interaction=nonstopmode", *(["-halt-on-error"] if halt else []), main_file]
             aux_file = self._safe_path(temp_dir, main_file.replace(".tex", ".aux"))
 
             # First pass
             result = subprocess.run(
-                [compiler, "-synctex=1", "-interaction=nonstopmode", "-halt-on-error", main_file],
+                cmd,
                 cwd=temp_dir,
                 capture_output=True,
                 text=True,
@@ -100,7 +108,7 @@ class LaTeXService:
             if ran_bibtex:
                 for _ in range(2):
                     result = subprocess.run(
-                        [compiler, "-synctex=1", "-interaction=nonstopmode", "-halt-on-error", main_file],
+                        cmd,
                         cwd=temp_dir,
                         capture_output=True,
                         text=True,
@@ -108,7 +116,7 @@ class LaTeXService:
                     )
             elif result.stdout and "Rerun" in result.stdout:
                 result = subprocess.run(
-                    [compiler, "-synctex=1", "-interaction=nonstopmode", "-halt-on-error", main_file],
+                    cmd,
                     cwd=temp_dir,
                     capture_output=True,
                     text=True,
@@ -118,6 +126,8 @@ class LaTeXService:
             # Check for PDF output
             pdf_path = self._safe_path(temp_dir, main_file.replace(".tex", ".pdf"))
 
+            log_path = self._safe_path(temp_dir, main_file.replace(".tex", ".log"))
+            log = Path(log_path).read_text(encoding="utf-8", errors="replace") if os.path.exists(log_path) else None
             if os.path.exists(pdf_path):
                 with open(pdf_path, "rb") as f:
                     pdf_content = f.read()
@@ -126,19 +136,18 @@ class LaTeXService:
                 if os.path.exists(sync_path):
                     with open(sync_path, "rb") as f:
                         synctex = f.read()
-                return True, pdf_content, None, synctex
+                return True, pdf_content, None, synctex, log
             else:
                 # Extract error from log
-                log_path = self._safe_path(temp_dir, main_file.replace(".tex", ".log"))
                 error_msg = self._extract_error(log_path) if os.path.exists(log_path) else result.stderr
-                return False, None, error_msg or "PDF generation failed", None
+                return False, None, error_msg or "PDF generation failed", None, log
                 
         except subprocess.TimeoutExpired:
-            return False, None, f"Compilation timed out after {self.timeout} seconds", None
-        except FileNotFoundError as e:
-            return False, None, f"LaTeX compiler not found: {compiler}. Install TeX Live or MiKTeX.", None
+            return False, None, f"Compilation timed out after {self.timeout} seconds", None, None
+        except FileNotFoundError:
+            return False, None, f"LaTeX compiler not found: {compiler}. Install TeX Live or MiKTeX.", None, None
         except Exception as e:
-            return False, None, str(e), None
+            return False, None, str(e), None, None
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
     

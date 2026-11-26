@@ -813,6 +813,70 @@ class FirestoreService:
             return True
         return False
     
+    # Email allowlist: the only gate the beforeCreate blocking function can see (it never sees invite codes).
+    @offload
+    def redeem_invite(self, code: str, email: str, ttl_hours: int = 24) -> bool:
+        """Atomically consume one invite use and allowlist `email` for sign-up within `ttl_hours`."""
+        self._ensure_initialized()
+        code, email = code.strip().upper(), email.strip().lower()
+        now = datetime.now(timezone.utc)
+        entry = {"email": email, "role": "user", "invite_code": code, "created_at": now, "expires_at": now + timedelta(hours=ttl_hours)}
+        if not self.enabled:
+            inv = self._dev_data["invites"].get(code)
+            if not (inv and inv.get("active") and inv.get("used_count", 0) < inv.get("max_uses", 1)):
+                return False
+            inv["used_count"] += 1
+            inv["used_by"].append(email)
+            self._dev_data.setdefault("allowed_emails", {})[email] = entry
+            return True
+        invite_ref = self.db.collection("invites").document(code)
+
+        @firestore.transactional
+        def txn(transaction) -> bool:
+            snap = invite_ref.get(transaction=transaction)
+            data = snap.to_dict() if snap.exists else None
+            if not (data and data.get("active") and data.get("used_count", 0) < data.get("max_uses", 1)):
+                return False
+            transaction.update(invite_ref, {"used_count": firestore.Increment(1), "used_by": firestore.ArrayUnion([email])})
+            transaction.set(self.db.collection("allowed_emails").document(email), entry)
+            return True
+        return txn(self.db.transaction())
+
+    @offload
+    def allow_email(self, email: str, role: str = "user", expires_at: Optional[datetime] = None, source: str = "admin") -> Dict:
+        self._ensure_initialized()
+        email = email.strip().lower()
+        entry = {"email": email, "role": role, "invite_code": None, "source": source,
+                 "created_at": datetime.now(timezone.utc), "expires_at": expires_at}
+        if self.enabled:
+            self.db.collection("allowed_emails").document(email).set(entry)
+        else:
+            self._dev_data.setdefault("allowed_emails", {})[email] = entry
+        return entry
+
+    @offload
+    def get_allowed_email(self, email: str) -> Optional[Dict]:
+        """Unexpired allowlist entry for `email`; expires_at=None means permanent."""
+        self._ensure_initialized()
+        email = email.strip().lower()
+        if self.enabled:
+            snap = self.db.collection("allowed_emails").document(email).get()
+            entry = snap.to_dict() if snap.exists else None
+        else:
+            entry = self._dev_data.get("allowed_emails", {}).get(email)
+        if entry and (entry.get("expires_at") is None or entry["expires_at"] > datetime.now(timezone.utc)):
+            return entry
+        return None
+
+    @offload
+    def delete_allowed_email(self, email: str) -> None:
+        self._ensure_initialized()
+        email = email.strip().lower()
+        if self.enabled:
+            self.db.collection("allowed_emails").document(email).delete()
+        else:
+            self._dev_data.get("allowed_emails", {}).pop(email, None)
+
     @offload
     def get_all_invites(self) -> List[Dict]:
         self._ensure_initialized()

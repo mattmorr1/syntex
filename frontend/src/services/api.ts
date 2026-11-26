@@ -1,5 +1,5 @@
 import { useAuthStore } from '../store/authStore';
-import { firebaseEnabled, getCurrentToken } from './firebase';
+import { firebaseEnabled, getCurrentToken, logoutFirebase } from './firebase';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
@@ -37,12 +37,36 @@ async function request<T>(
   if (!response.ok) {
     const body = await response.json().catch(() => ({ detail: 'Request failed' }));
     const detail = body.detail;
+    // A signed-in identity the backend refuses must not linger: it would keep sending a token that can never work.
+    if (response.status === 403 && ['not_provisioned', 'not_invited'].includes(detail?.code)) {
+      useAuthStore.getState().logout();
+      await logoutFirebase();
+    }
     // FastAPI details may be strings or objects; an object stringifies to "[object Object]".
     const message = typeof detail === 'string' ? detail : detail?.message || 'Request failed';
     throw Object.assign(new Error(message), { status: response.status, detail });
   }
 
   return response.json();
+}
+
+export interface AgentStep {
+  step: number;
+  thought: string;
+  action: string;
+  args: string;
+  observation: string;
+  tokens: number;
+  ms: number;
+}
+
+export interface AgentResult {
+  explanation: string;
+  changes: any[];
+  tokens: number;
+  status: 'verified' | 'unverified' | 'no_changes';
+  steps: number;
+  compiles: number;
 }
 
 export const api = {
@@ -59,10 +83,16 @@ export const api = {
       body: JSON.stringify({ email, password, username, invite_code: inviteCode }),
     }),
 
-  googleAuth: (idToken: string, inviteCode?: string) =>
-    request<{ token: string; user: any }>('/auth/google', {
+  redeemInvite: (code: string, email: string) =>
+    request<{ message: string; email: string }>('/auth/redeem-invite', {
       method: 'POST',
-      body: JSON.stringify({ id_token: idToken, invite_code: inviteCode }),
+      body: JSON.stringify({ code, email }),
+    }),
+
+  provision: (username?: string) =>
+    request<{ token: string; user: any }>('/auth/provision', {
+      method: 'POST',
+      body: JSON.stringify({ username: username || null }),
     }),
 
   getMembers: (id: string) =>
@@ -203,11 +233,13 @@ export const api = {
     model?: string,
     selection?: { text: string; start_line: number; end_line: number },
     onChunk?: (text: string) => void,
-    onResult?: (data: { explanation: string; changes: any[]; tokens: number }) => void,
+    onResult?: (data: AgentResult) => void,
     onError?: (message: string) => void,
     projectFiles?: Array<{ name: string; content: string; type: string }>,
     fileName?: string,
     cursorLine?: number,
+    mainFile?: string,
+    onStep?: (step: AgentStep) => void,
   ) => {
     const token = useAuthStore.getState().token;
     const response = await fetch(`${API_BASE}/ai/agent-edit/stream`, {
@@ -216,7 +248,7 @@ export const api = {
         'Content-Type': 'application/json',
         ...(token && { Authorization: `Bearer ${token}` }),
       },
-      body: JSON.stringify({ project_id: projectId, instruction, document, model, selection, project_files: projectFiles, file_name: fileName, cursor_line: cursorLine }),
+      body: JSON.stringify({ project_id: projectId, instruction, document, model, selection, project_files: projectFiles, file_name: fileName, cursor_line: cursorLine, main_file: mainFile }),
     });
 
     if (response.status === 401) {
@@ -226,7 +258,7 @@ export const api = {
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({ detail: 'Request failed' }));
-      throw new Error(error.detail || 'Request failed');
+      throw new Error(typeof error.detail === 'string' ? error.detail : error.detail?.message || 'Request failed');
     }
 
     const reader = response.body?.getReader();
@@ -250,6 +282,7 @@ export const api = {
           try {
             const parsed = JSON.parse(data);
             if (parsed.type === 'chunk') onChunk?.(parsed.text);
+            else if (parsed.type === 'step') onStep?.(parsed);
             else if (parsed.type === 'result') onResult?.(parsed);
             else if (parsed.type === 'error') onError?.(parsed.message);
           } catch {

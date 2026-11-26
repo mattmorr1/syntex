@@ -1007,6 +1007,7 @@ export function Editor() {
                   cursorLine={monacoEditorRef.current?.getCursorLine()}
                   projectFiles={currentProject?.files}
                   compileError={compileError}
+                  mainFile={currentProject?.mainFile}
                   onApplyChanges={(newContent) => {
                     if (activeFile) updateFileContent(activeFile, newContent);
                   }}

@@ -137,35 +137,24 @@ async def agent_edit_stream(request: AgentEditRequest, user: dict = Depends(get_
         total_tokens = 0
         try:
             selection_dict = request.selection.model_dump() if request.selection else None
-            async for event in provider.agent_edit_stream(
-                request.document,
-                request.instruction,
-                model,
-                selection=selection_dict,
-                project_files=request.project_files,
-                file_name=request.file_name,
-                cursor_line=request.cursor_line,
+            async for event in provider.agent_run_stream(
+                request.document, request.instruction, model, selection=selection_dict,
+                project_files=request.project_files, file_name=request.file_name,
+                cursor_line=request.cursor_line, main_file=request.main_file,
             ):
-                if event["type"] == "chunk":
-                    yield f"data: {json_lib.dumps({'type': 'chunk', 'text': event['text']})}\n\n"
-                elif event["type"] == "result":
-                    total_tokens = event.get("tokens", 0)
-                    result = event["data"]
-                    yield f"data: {json_lib.dumps({'type': 'result', 'explanation': result.get('explanation', ''), 'changes': result.get('changes', []), 'tokens': total_tokens})}\n\n"
-        except Exception as e:
-            logger.error(f"agent_edit_stream failed: {e}")
+                total_tokens = event["tokens"] if event["type"] == "result" else total_tokens + event.get("tokens", 0)
+                yield f"data: {json_lib.dumps(event)}\n\n"
+        except Exception:
+            logger.exception("agent run failed for uid=%s", user["uid"])
             yield f"data: {json_lib.dumps({'type': 'error', 'message': 'An error occurred while processing your request.'})}\n\n"
         finally:
             if total_tokens > 0:
+                tier = {"flash_tokens": total_tokens} if model == "flash" else {"pro_tokens": total_tokens}
                 try:
-                    if model == "flash":
-                        await db_service.update_user_tokens(user["uid"], flash_tokens=total_tokens)
-                        await db_service.update_monthly_tokens(user["uid"], flash_tokens=total_tokens)
-                    else:
-                        await db_service.update_user_tokens(user["uid"], pro_tokens=total_tokens)
-                        await db_service.update_monthly_tokens(user["uid"], pro_tokens=total_tokens)
+                    await db_service.update_user_tokens(user["uid"], **tier)
+                    await db_service.update_monthly_tokens(user["uid"], **tier)
                 except Exception:
-                    pass
+                    logger.exception("token accounting failed for uid=%s (%d tokens)", user["uid"], total_tokens)
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(

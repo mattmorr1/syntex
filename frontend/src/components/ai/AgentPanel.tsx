@@ -23,7 +23,7 @@ import {
 } from '@mui/icons-material';
 import { useThemeStore } from '../../store/themeStore';
 import { useSettingsStore } from '../../store/settingsStore';
-import { api } from '../../services/api';
+import { api, AgentStep, AgentResult } from '../../services/api';
 
 interface DiffChange {
   start_line: number;
@@ -60,6 +60,7 @@ interface AgentPanelProps {
   cursorLine?: number;
   projectFiles?: ProjectFile[];
   compileError?: string | null;
+  mainFile?: string;
   onApplyChanges: (newContent: string) => void;
   onClose?: () => void;
 }
@@ -95,6 +96,7 @@ export function AgentPanel({
   cursorLine,
   projectFiles,
   compileError,
+  mainFile,
   onApplyChanges,
   onClose,
 }: AgentPanelProps) {
@@ -106,6 +108,8 @@ export function AgentPanel({
   const [explanation, setExplanation] = useState('');
   const [changes, setChanges] = useState<DiffChange[]>([]);
   const [tokensUsed, setTokensUsed] = useState(0);
+  const [steps, setSteps] = useState<AgentStep[]>([]);
+  const [status, setStatus] = useState<AgentResult['status'] | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [lastInstruction, setLastInstruction] = useState('');
   const [dismissedError, setDismissedError] = useState(false);
@@ -178,6 +182,8 @@ export function AgentPanel({
     setChanges([]);
     setExplanation('');
     setTokensUsed(0);
+    setSteps([]);
+    setStatus(null);
     setLastInstruction(instruction);
 
     const selectionPayload = selection
@@ -210,6 +216,7 @@ export function AgentPanel({
           setExplanation(result.explanation);
           setChanges(result.changes.map((c: any) => ({ ...c })));
           setTokensUsed(result.tokens);
+          setStatus(result.status);
         },
         (message) => {
           setError(message);
@@ -217,13 +224,15 @@ export function AgentPanel({
         supportingFiles,
         fileName,
         cursorLine,
+        mainFile,
+        (step) => setSteps(prev => [...prev, step]),
       );
     } catch (err: any) {
       setError(err.message || 'Failed to process request');
     } finally {
       setLoading(false);
     }
-  }, [instruction, lastInstruction, explanation, changes, tokensUsed, projectId, document, fileName, aiModel, selection, cursorLine, compileError, dismissedError, projectFiles]);
+  }, [instruction, lastInstruction, explanation, changes, tokensUsed, projectId, document, fileName, mainFile, aiModel, selection, cursorLine, compileError, dismissedError, projectFiles]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (atSuggestions.length > 0 && (e.key === 'Escape')) {
@@ -244,7 +253,9 @@ export function AgentPanel({
     const replacementLines = change.replacement.split('\n');
     const newLines = [...beforeLines, ...replacementLines, ...afterLines];
     onApplyChanges(newLines.join('\n'));
-    setChanges(prev => prev.filter((_, i) => i !== index));
+    const delta = replacementLines.length - (change.end_line - change.start_line + 1);
+    setChanges(prev => prev.filter((_, i) => i !== index).map(c =>
+      c.start_line > change.end_line ? { ...c, start_line: c.start_line + delta, end_line: c.end_line + delta } : c));
   };
 
   const handleRejectChange = (index: number) => {
@@ -312,7 +323,7 @@ export function AgentPanel({
                 borderRadius: '10px 10px 2px 10px',
                 maxWidth: '85%',
               }}>
-                <Typography sx={{ fontSize: 11, color: '#fff', lineHeight: 1.4 }}>
+                <Typography sx={{ fontSize: 11, color: 'primary.contrastText', lineHeight: 1.4 }}>
                   {entry.instruction}
                 </Typography>
               </Box>
@@ -348,12 +359,14 @@ export function AgentPanel({
               borderRadius: '10px 10px 2px 10px',
               maxWidth: '85%',
             }}>
-              <Typography sx={{ fontSize: 11, color: '#fff', lineHeight: 1.4 }}>
+              <Typography sx={{ fontSize: 11, color: 'primary.contrastText', lineHeight: 1.4 }}>
                 {lastInstruction}
               </Typography>
             </Box>
           </Box>
         )}
+
+        {steps.length > 0 && <AgentTrace steps={steps} live={loading} accentBorder={accentBorder} />}
 
         {explanation && (
           <Box sx={{
@@ -366,6 +379,15 @@ export function AgentPanel({
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mb: 0.75 }}>
               <SmartToy sx={{ fontSize: 12, color: 'primary.main' }} />
               <Typography sx={{ fontSize: 10, fontWeight: 600 }}>syntex</Typography>
+              {status && status !== 'no_changes' && (
+                <Chip
+                  label={status === 'verified' ? 'compile-verified' : 'not verified'}
+                  size="small"
+                  color={status === 'verified' ? 'success' : 'warning'}
+                  variant="outlined"
+                  sx={{ height: 16, fontSize: 9, ml: 'auto' }}
+                />
+              )}
             </Box>
             <Typography sx={{ fontSize: 12, lineHeight: 1.5, color: 'text.secondary' }}>
               {explanation}
@@ -516,14 +538,14 @@ export function AgentPanel({
               sx={{
                 p: 0.5,
                 bgcolor: 'primary.main',
-                color: '#fff',
+                color: 'primary.contrastText',
                 borderRadius: '6px',
                 '&:hover': { bgcolor: 'primary.dark' },
                 '&:disabled': { bgcolor: accentBorder, color: 'text.disabled' },
               }}
             >
               {loading
-                ? <CircularProgress size={12} sx={{ color: '#fff' }} />
+                ? <CircularProgress size={12} sx={{ color: 'primary.contrastText' }} />
                 : <Send sx={{ fontSize: 14, transform: 'rotate(-45deg)' }} />}
             </IconButton>
           </Box>
@@ -532,6 +554,44 @@ export function AgentPanel({
           AI can make mistakes. Please verify important info.
         </Typography>
       </Box>
+    </Box>
+  );
+}
+
+const ACTION_LABEL: Record<string, string> = {
+  read_file: 'read', search: 'search', edit: 'edit', compile: 'compile', inspect_log: 'inspect log', finish: 'finish',
+};
+
+function AgentTrace({ steps, live, accentBorder }: { steps: AgentStep[]; live: boolean; accentBorder: string }) {
+  const [open, setOpen] = useState<number | null>(null);
+  const [expanded, setExpanded] = useState(true);
+  useEffect(() => { if (!live) setExpanded(false); }, [live]);
+
+  return (
+    <Box sx={{ border: `1px solid ${accentBorder}`, borderRadius: '6px', overflow: 'hidden' }}>
+      <Box onClick={() => setExpanded(!expanded)} sx={{ px: 1, py: 0.5, display: 'flex', alignItems: 'center', cursor: 'pointer', bgcolor: 'action.hover' }}>
+        <Typography sx={{ fontSize: 10, fontWeight: 600, color: 'text.primary', flex: 1 }}>
+          {live ? 'Working' : 'Reasoning trace'} · {steps.length} step{steps.length === 1 ? '' : 's'}
+        </Typography>
+        {expanded ? <ExpandLess sx={{ fontSize: 14 }} /> : <ExpandMore sx={{ fontSize: 14 }} />}
+      </Box>
+      <Collapse in={expanded}>
+        {steps.map(s => (
+          <Box key={s.step} sx={{ px: 1, py: 0.5, borderTop: `1px solid ${accentBorder}` }}>
+            <Box onClick={() => setOpen(open === s.step ? null : s.step)} sx={{ cursor: 'pointer' }}>
+              <Typography sx={{ fontSize: 10, fontFamily: 'monospace', color: 'text.primary' }}>
+                {s.step}. {ACTION_LABEL[s.action] ?? s.action} <Box component="span" sx={{ color: 'text.secondary' }}>{s.args}</Box>
+              </Typography>
+              {s.thought && <Typography sx={{ fontSize: 10, color: 'text.secondary' }}>{s.thought}</Typography>}
+            </Box>
+            <Collapse in={open === s.step}>
+              <Box component="pre" sx={{ m: 0, mt: 0.5, p: 0.75, fontSize: 9.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word', bgcolor: 'background.default', color: 'text.primary', borderRadius: '4px' }}>
+                {s.observation}
+              </Box>
+            </Collapse>
+          </Box>
+        ))}
+      </Collapse>
     </Box>
   );
 }

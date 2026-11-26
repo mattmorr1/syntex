@@ -27,7 +27,6 @@ export function Login() {
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
   const [needsInvite, setNeedsInvite] = useState(false);
-  const [inviteCode, setInviteCode] = useState('');
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -37,34 +36,24 @@ export function Login() {
     try {
       await login(email, password);
     } catch (err: any) {
-      setError(err.message || 'Login failed');
+      if (['not_provisioned', 'not_invited'].includes(err.detail?.code)) setNeedsInvite(true);
+      else setError(err.message || 'Login failed');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleGoogleLogin = async (withInvite = false) => {
+  const handleGoogleLogin = async () => {
     setError('');
     setGoogleLoading(true);
-    
     try {
-      await loginWithGoogle(withInvite ? inviteCode : undefined);
+      await loginWithGoogle();
     } catch (err: any) {
-      if (err.message === 'INVITE_REQUIRED') {
-        setNeedsInvite(true);
-        setError('New account - please enter an invite code');
-      } else {
-        setError(err.message || 'Google login failed');
-      }
+      if (err.message === 'INVITE_REQUIRED') setNeedsInvite(true);
+      else setError(err.message || 'Google login failed');
     } finally {
       setGoogleLoading(false);
     }
-  };
-
-  const handleInviteSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!inviteCode.trim()) return;
-    await handleGoogleLogin(true);
   };
 
   return (
@@ -93,40 +82,24 @@ export function Login() {
           {error && <Alert severity="error" sx={{ mb: 2, fontSize: 12 }}>{error}</Alert>}
 
           {needsInvite ? (
-            <Box component="form" onSubmit={handleInviteSubmit}>
+            <Box>
               <Button
                 startIcon={<ArrowBack sx={{ fontSize: 14 }} />}
-                onClick={() => { setNeedsInvite(false); setError(''); setInviteCode(''); }}
+                onClick={() => { setNeedsInvite(false); setError(''); }}
                 sx={{ mb: 2, p: 0, fontSize: 12 }}
                 size="small"
               >
                 Back
               </Button>
-
-              <Typography sx={{ mb: 2, fontSize: 12, color: 'text.secondary' }}>
-                Enter your invite code to create an account with Google
-              </Typography>
-
-              <TextField
-                fullWidth
-                label="Invite Code"
-                value={inviteCode}
-                onChange={(e) => setInviteCode(e.target.value.toUpperCase())}
-                required
-                placeholder="Enter your invite code"
-                sx={{ mb: 2 }}
-                inputProps={{ style: { textTransform: 'uppercase', letterSpacing: 2 } }}
-              />
-
-              <Button
-                type="submit"
-                fullWidth
-                variant="contained"
-                size="large"
-                disabled={googleLoading || !inviteCode.trim()}
-                startIcon={googleLoading ? <CircularProgress size={18} /> : <Google />}
-              >
-                Continue with Google
+              <Alert severity="info" sx={{ mb: 2, fontSize: 12 }}>
+                This account doesn't have access yet. syntex is invite-only: redeem your invite code for this
+                email, then sign up with the same account.
+              </Alert>
+              <Button component={RouterLink} to="/register" fullWidth variant="contained" sx={{ mb: 1 }}>
+                I have an invite code
+              </Button>
+              <Button component={RouterLink} to="/request-access" fullWidth variant="text" size="small">
+                Request access
               </Button>
             </Box>
           ) : (
@@ -138,7 +111,7 @@ export function Login() {
                     variant="outlined"
                     size="large"
                     startIcon={googleLoading ? <CircularProgress size={18} /> : <Google />}
-                    onClick={() => handleGoogleLogin(false)}
+                    onClick={handleGoogleLogin}
                     disabled={googleLoading || loading}
                     sx={{ mb: 2 }}
                   >
