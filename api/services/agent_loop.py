@@ -20,11 +20,17 @@ logger = logging.getLogger(__name__)
 
 MAX_STEPS = 10
 MAX_COMPILES = 4
-MAX_RUN_TOKENS = 250_000
-RUN_DEADLINE_S = 240.0
+STEP_CEILING = 30
+COMPILE_CEILING = 8
+MAX_RUN_TOKENS = 400_000
+RUN_DEADLINE_S = 540.0
+# Conservative: Gemini bills cached input at 10-25% of the base rate, so count 75% of cached tokens as saved.
+CACHE_DISCOUNT = 0.75
 OBS_CAP = 4000
-OLD_OBS_CAP = 300
-KEEP_FULL_OBS = 3
+EDIT_WINDOW = 8
+NOTES_CAP = 4000
+PRIOR_STEPS_CAP = 20
+PRIOR_OBS_CAP = 300
 READ_MAX_LINES = 200
 FULL_VIEW_LINES = 400
 SEARCH_MAX_HITS = 40
@@ -47,8 +53,9 @@ ACTION_SCHEMA: Dict[str, Any] = {
     "required": ["thought", "action", "args"],
 }
 
-# (prompt) -> (action dict, tokens); raises ValueError on an unparseable response.
-LLM = Callable[[str], Awaitable[Tuple[Dict[str, Any], int]]]
+Turn = Tuple[str, str]  # (role "user"|"model", text)
+# (conversation) -> (action dict, total tokens, cached tokens); raises ValueError on an unparseable response.
+LLM = Callable[[List[Turn]], Awaitable[Tuple[Dict[str, Any], int, int]]]
 # (files, main_file) -> (pdf_produced, log text)
 Compiler = Callable[[List[Dict[str, Any]], str], Awaitable[Tuple[bool, str]]]
 
@@ -157,9 +164,16 @@ class AgentLoop:
     selection: Optional[Dict[str, Any]] = None
     cursor_line: Optional[int] = None
     run_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
-    original: str = ""
+    original: Optional[str] = None
+    max_steps: int = MAX_STEPS
+    max_compiles: int = MAX_COMPILES
+    verify: bool = True
+    notes: str = ""
+    prior: List[Dict[str, Any]] = field(default_factory=list)
     steps: List[Step] = field(default_factory=list)
+    turns: List[Turn] = field(default_factory=list)
     tokens: int = 0
+    cached: int = 0
     edits: int = 0
     compiles: int = 0
     dirty: bool = False
@@ -172,7 +186,7 @@ class AgentLoop:
     _baseline_task: Optional[asyncio.Task] = None
 
     def __post_init__(self) -> None:
-        self.original = self.files[self.active]
+        self.original = self.files[self.active] if self.original is None else self.original
         if not self.main_file:
             self.unavailable = "no main .tex file with \\documentclass in the project"
 
@@ -227,14 +241,16 @@ class AgentLoop:
         lines[start - 1:end] = new_lines
         self.files[self.active] = "\n".join(lines)
         self.edits, self.dirty = self.edits + 1, True
-        return f"applied: lines {start}-{end} -> {len(new_lines)} lines (empty replacement deletes). File now {len(lines)} lines; later line numbers shifted."
+        lo, hi = max(1, start - EDIT_WINDOW), min(len(lines), start + len(new_lines) + EDIT_WINDOW - 1)
+        return (f"applied: lines {start}-{end} -> {len(new_lines)} lines. File now {len(lines)} lines; later line numbers shifted. "
+                f"Current lines {lo}-{hi}:\n{_numbered(lines[lo - 1:hi], lo)}")
 
     async def _t_compile(self, _args: Dict[str, Any]) -> str:
         await self._await_baseline()
         if self.unavailable:
             return f"compile unavailable: {self.unavailable}. Verification cannot run; finish when the edit is complete."
-        if self.compiles >= MAX_COMPILES:
-            return f"compile budget ({MAX_COMPILES}) exhausted"
+        if self.compiles >= self.max_compiles:
+            return f"compile budget ({self.max_compiles}) exhausted"
         self.compiles += 1
         ok, self.last_log = await self.compiler(self._compile_files(), self.main_file or "")
         current = parse_log(self.last_log)
@@ -263,16 +279,17 @@ class AgentLoop:
         return "\n--\n".join("\n".join(lines[max(0, i - ctx):i + ctx + 1]) for i in idx) or "no matches"
 
     def _gate(self) -> Optional[str]:
-        if not self.edits or self.unavailable:
+        if not self.verify or not self.edits or self.unavailable:
             return None
-        if self.dirty and self.compiles < MAX_COMPILES:
+        if self.dirty and self.compiles < self.max_compiles:
             return "REJECTED: you edited after the last compile. Call compile to verify first."
         if self.new_errors and not self.dirty:
             return f"REJECTED: the last compile has {len(self.new_errors)} error(s) the baseline did not. Inspect the log and fix them."
         return None
 
-    # -- prompt ------------------------------------------------------------
-    def _prompt(self) -> str:
+    # -- conversation ----------------------------------------------------
+    def _opening(self) -> str:
+        """First user turn; never mutated afterwards so every later request shares it as a cacheable prefix."""
         lines = self.files[self.active].split("\n")
         if len(lines) <= FULL_VIEW_LINES:
             view, note = _numbered(lines, 1), "full file"
@@ -282,37 +299,37 @@ class AgentLoop:
             view, note = _numbered(lines[lo - 1:lo - 1 + FULL_VIEW_LINES], lo), f"window; file has {len(lines)} lines, use read_file for the rest"
         files = ", ".join(f"{n} ({c.count(chr(10)) + 1} lines)" for n, c in self.files.items())
         sel = f"\nUSER SELECTION lines {self.selection['start_line']}-{self.selection['end_line']}:\n{self.selection.get('text', '')[:3000]}\n" if self.selection else ""
-        hist = "\n\n".join(
-            f"Step {k}\nThought: {s.thought}\nAction: {s.action} {json.dumps(s.args)[:400]}\nObservation: {s.observation if k > len(self.steps) - KEEP_FULL_OBS else _clip(s.observation, OLD_OBS_CAP)}"
-            for k, s in enumerate(self.steps, 1))
-        return f"""You are a LaTeX editing agent running a ReAct loop. Each turn return JSON {{"thought", "action", "args"}}.
+        notes = f"\nPROJECT INSTRUCTIONS (AGENTS.md, follow them):\n{self.notes}\n" if self.notes else ""
+        prior = ("\nPREVIOUS RUN (stopped by the user; its edits are already in the file below):\n" + "\n".join(
+            f"- {p.get('action', '')} {_clip(str(p.get('args', '')), 120)} -> {_clip(str(p.get('observation', '')), PRIOR_OBS_CAP)}"
+            for p in self.prior) + "\n") if self.prior else ""
+        verify = ("2. After editing, compile; if there are new errors, inspect_log, fix, recompile." if self.verify else
+                  "2. Compiling is optional (verification is off); compile when unsure the edit builds.")
+        return f"""You are a LaTeX editing agent running a ReAct loop. Each turn return JSON {{"thought", "action", "args"}}. Each tool result arrives as the next user message.
 
 TOOLS
 - read_file {{name, start?, end?}}: numbered lines, max {READ_MAX_LINES}.
 - search {{pattern, name?}}: regex over project text files.
-- edit {{start_line, end_line, original, replacement}}: replace lines start_line..end_line (1-based, inclusive) of the ACTIVE file `{self.active}`. `original` must equal those lines exactly; an empty replacement deletes them. To insert, set end_line = start_line - 1 and original "". Line numbers refer to the CURRENT file below.
+- edit {{start_line, end_line, original, replacement}}: replace lines start_line..end_line (1-based, inclusive) of the ACTIVE file `{self.active}`. `original` must equal those lines exactly; an empty replacement deletes them. To insert, set end_line = start_line - 1 and original "". Line numbers refer to the CURRENT file: after an edit, use the numbered lines in its result, not the snapshot below.
 - compile {{}}: compile the project; reports errors your edits introduced versus the pre-edit baseline.
 - inspect_log {{mode: errors|warnings|grep|tail, pattern?, context?}}: inspect the last compile log.
-- finish {{explanation}}: end the run. Refused while edits are uncompiled or the last compile has new errors.
+- finish {{explanation}}: end the run.{" Refused while edits are uncompiled or the last compile has new errors." if self.verify else ""}
 
 RULES
 1. Make the minimum edits needed; preserve existing style. Only the active file can be edited.
-2. After editing, compile; if there are new errors, inspect_log, fix, recompile.
+{verify}
 3. Pre-existing baseline errors are not yours to fix unless the instruction asks.
 4. For questions that need no edit, finish immediately with the answer as the explanation.
-5. Budget: {MAX_STEPS} steps, {MAX_COMPILES} compiles. Steps used: {len(self.steps)}.
+5. Budget: {self.max_steps} steps, {self.max_compiles} compiles. Each tool result reports usage.
 6. `args` must contain every field; set the ones this action does not use to null.
 
 PROJECT FILES: {files}
 MAIN FILE: {self.main_file or 'none'}
-{self.attachment_note}{sel}
-CURRENT ACTIVE FILE `{self.active}` ({note}; reflects your edits):
+{self.attachment_note}{notes}{prior}{sel}
+ACTIVE FILE `{self.active}` at the start of this run ({note}):
 {view}
 
-USER INSTRUCTION: {self.instruction}
-
-HISTORY:
-{hist or '(none yet)'}"""
+USER INSTRUCTION: {self.instruction}"""
 
     # -- driver ------------------------------------------------------------
     def _result(self, explanation: str, stop: str) -> Dict[str, Any]:
@@ -324,36 +341,38 @@ HISTORY:
         elif stop != "finish":
             explanation += f"\n\n[Stopped ({stop}) before finishing. Last tool result: {_clip(self.steps[-1].observation, 200) if self.steps else 'none'}]"
         return {"type": "result", "explanation": explanation, "changes": changes,
-                "tokens": self.tokens, "status": status, "steps": len(self.steps), "compiles": self.compiles}
+                "tokens": self.tokens, "cached": self.cached, "status": status, "steps": len(self.steps), "compiles": self.compiles}
 
     async def run(self) -> AsyncIterator[Dict[str, Any]]:
         t_run = time.monotonic()
-        if self.main_file:
+        if self.main_file and self.max_compiles > 0:
             self._baseline_task = asyncio.create_task(self.compiler(self._compile_files(), self.main_file))
         tools = {"read_file": self._t_read_file, "search": self._t_search, "edit": self._t_edit, "inspect_log": self._t_inspect_log}
         stop = "step budget"
+        self.turns = [("user", self._opening())]
         try:
-            while len(self.steps) < MAX_STEPS:
+            while len(self.steps) < self.max_steps:
                 if self.tokens >= MAX_RUN_TOKENS or time.monotonic() - t_run > RUN_DEADLINE_S:
                     stop = "token budget" if self.tokens >= MAX_RUN_TOKENS else "deadline"
                     break
-                t0, obs = time.monotonic(), ""
+                t0, obs, tok, cached, edits = time.monotonic(), "", 0, 0, self.edits
                 try:
-                    act, tok = await self.llm(self._prompt())
-                    self.tokens += tok
+                    act, total, cached = await self.llm(self.turns)
+                    tok = total - int(cached * CACHE_DISCOUNT)
+                    self.tokens, self.cached = self.tokens + tok, self.cached + cached
                     thought, action, args = str(act.get("thought", "")), str(act.get("action", "")), act.get("args") or {}
                     if not isinstance(args, dict):
                         raise ValueError("args must be an object")
                     args = {k: v for k, v in args.items() if v is not None}
                 except ValueError as e:
-                    thought, action, args, tok = "", "", {}, 0
+                    thought, action, args = "", "", {}
                     obs = f"Your response was not a valid action JSON ({e}). Return {{thought, action, args}}."
                 llm_ms, t1 = int((time.monotonic() - t0) * 1000), time.monotonic()
                 if action == "finish":
                     await self._await_baseline()
                     obs = self._gate() or ""
                     if not obs:
-                        self._trace(len(self.steps) + 1, action, args, "accepted", tok, llm_ms, 0)
+                        self._trace(len(self.steps) + 1, action, args, "accepted", tok, cached, llm_ms, 0)
                         yield self._result(str(args.get("explanation") or thought), "finish")
                         return
                 elif action == "compile":
@@ -364,10 +383,14 @@ HISTORY:
                     obs = f"unknown action {action!r}; choose one of {', '.join(ACTIONS)}"
                 obs = _clip(obs, OBS_CAP)
                 self.steps.append(Step(thought, action, args, obs))
+                self.turns += [("model", json.dumps({"thought": thought, "action": action, "args": args}) if action else "(invalid response)"),
+                               ("user", f"{obs}\n[steps {len(self.steps)}/{self.max_steps}, compiles {self.compiles}/{self.max_compiles}]")]
                 tool_ms = int((time.monotonic() - t1) * 1000)
-                self._trace(len(self.steps), action, args, obs, tok, llm_ms, tool_ms)
-                yield {"type": "step", "step": len(self.steps), "thought": thought, "action": action,
-                       "args": self._args_summary(action, args), "observation": _clip(obs, 600), "tokens": tok, "ms": llm_ms + tool_ms}
+                self._trace(len(self.steps), action, args, obs, tok, cached, llm_ms, tool_ms)
+                yield {"type": "step", "step": len(self.steps), "thought": thought, "action": action, "args": self._args_summary(action, args),
+                       "observation": _clip(obs, 600), "tokens": tok, "cached": cached, "ms": llm_ms + tool_ms}
+                if self.edits > edits:
+                    yield {"type": "draft", "changes": diff_changes(self.original, self.files[self.active])}
             await self._await_baseline()
             yield self._result(self.steps[-1].thought if self.steps else "", stop)
         finally:
@@ -380,10 +403,10 @@ HISTORY:
             return f"lines {args.get('start_line')}-{args.get('end_line')}"
         return _clip(json.dumps(args), 160)
 
-    def _trace(self, step: int, action: str, args: Dict[str, Any], obs: str, tokens: int, llm_ms: int, tool_ms: int) -> None:
+    def _trace(self, step: int, action: str, args: Dict[str, Any], obs: str, tokens: int, cached: int, llm_ms: int, tool_ms: int) -> None:
         logger.info("agent_step %s", json.dumps({
             "run_id": self.run_id, "step": step, "action": action, "args": self._args_summary(action, args),
-            "obs_chars": len(obs), "obs_head": obs[:120], "tokens": tokens, "run_tokens": self.tokens,
+            "obs_chars": len(obs), "obs_head": obs[:120], "tokens": tokens, "cached": cached, "run_tokens": self.tokens,
             "llm_ms": llm_ms, "tool_ms": tool_ms, "edits": self.edits, "compiles": self.compiles,
             "new_errors": len(self.new_errors), "dirty": self.dirty}))
 
@@ -391,7 +414,10 @@ HISTORY:
 def build_loop(llm: LLM, compiler: Compiler, *, document: str, instruction: str, file_name: Optional[str],
                project_files: Optional[List[Dict[str, Any]]], main_file: Optional[str],
                selection: Optional[Dict[str, Any]] = None, cursor_line: Optional[int] = None,
-               attachment: Optional[Dict[str, Any]] = None, pdf_visible: bool = False) -> AgentLoop:
+               attachment: Optional[Dict[str, Any]] = None, pdf_visible: bool = False,
+               settings: Optional[Dict[str, Any]] = None, base_document: Optional[str] = None,
+               prior_steps: Optional[List[Dict[str, Any]]] = None) -> AgentLoop:
+    """`base_document` is the pre-run text when resuming (`document` then carries the earlier run's edits)."""
     active = file_name or "main.tex"
     text = [f for f in project_files or [] if f.get("type") not in BINARY_TYPES and f.get("name") and f["name"] != active]
     files = {active: document, **{f["name"]: str(f.get("content") or "") for f in text}}
@@ -404,6 +430,12 @@ def build_loop(llm: LLM, compiler: Compiler, *, document: str, instruction: str,
         note = (f"ATTACHED PDF: text extract is the read-only file `{attachment['name']}` ({attachment['pages']} pages, '--- page N ---' markers); "
                 "use read_file/search on it." + (" The original PDF is also attached to this request: read equations, tables and layout from "
                                                  "it, since the extract flattens math." if pdf_visible else "") + "\n")
+    cfg = settings or {}
+    notes = next((c for n, c in files.items() if n.lower() == "agents.md"), "")
     return AgentLoop(llm=llm, compiler=compiler, instruction=instruction, files=files, file_types=types,
                      active=active, main_file=main_file, selection=selection, cursor_line=cursor_line,
-                     readonly=readonly, attachment_note=note)
+                     readonly=readonly, attachment_note=note, original=base_document,
+                     max_steps=max(1, min(int(cfg.get("max_steps") or MAX_STEPS), STEP_CEILING)),
+                     max_compiles=max(0, min(int(cfg.get("max_compiles", MAX_COMPILES)), COMPILE_CEILING)),
+                     verify=bool(cfg.get("verify", True)), notes=_clip(notes.strip(), NOTES_CAP),
+                     prior=(prior_steps or [])[-PRIOR_STEPS_CAP:])

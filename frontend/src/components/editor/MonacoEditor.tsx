@@ -424,6 +424,7 @@ function getLanguageFromFileName(fileName: string): string {
     bib: 'bibtex',
     cls: 'latex',
     sty: 'latex',
+    md: 'markdown',
   };
   return langMap[ext || ''] || 'plaintext';
 }

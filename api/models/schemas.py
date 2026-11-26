@@ -64,7 +64,7 @@ class AuthResponse(BaseModel):
 class ProjectFile(BaseModel):
     name: str
     content: str
-    type: Literal["tex", "bib", "cls", "sty", "png", "jpg", "pdf"] = "tex"
+    type: Literal["tex", "bib", "cls", "sty", "md", "png", "jpg", "pdf"] = "tex"
 
 class ProjectCreate(BaseModel):
     name: str
@@ -160,6 +160,17 @@ class AgentAttachment(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     data: str = Field(..., max_length=14_000_000)  # base64 PDF; ~10MB decoded
 
+class AgentSettings(BaseModel):
+    max_steps: int = Field(10, ge=1, le=30)
+    max_compiles: int = Field(4, ge=0, le=8)
+    thinking: Literal["low", "high"] = "low"
+    verify: bool = True
+
+class AgentPriorStep(BaseModel):
+    action: str = Field("", max_length=40)
+    args: str = Field("", max_length=400)
+    observation: str = Field("", max_length=1000)
+
 class AgentEditRequest(BaseModel):
     project_id: str
     instruction: str
@@ -171,6 +182,9 @@ class AgentEditRequest(BaseModel):
     cursor_line: Optional[int] = None  # 1-based line number of the cursor in the editor
     main_file: Optional[str] = None  # project root .tex compiled by the agent's verification step
     attachment: Optional[AgentAttachment] = None
+    settings: AgentSettings = Field(default_factory=AgentSettings)
+    base_document: Optional[str] = None  # resume: pre-run text; `document` then holds the stopped run's edits
+    prior_steps: List[AgentPriorStep] = Field(default_factory=list, max_length=20)
 
 class DiffChange(BaseModel):
     start_line: int

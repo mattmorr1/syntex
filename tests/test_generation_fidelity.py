@@ -176,13 +176,13 @@ def test_attachment_is_readable_but_never_compiled():
         compiled.append([f["name"] for f in files])
         return True, ""
 
-    async def llm(prompt):
-        return {"thought": "", "action": "finish", "args": {"explanation": "ok"}}, 0
+    async def llm(turns):
+        return {"thought": "", "action": "finish", "args": {"explanation": "ok"}}, 0, 0
 
     att = {"name": "paper.pdf.txt", "text": "--- page 1 ---\nalpha", "pdf": "", "pages": 1}
     loop = build_loop(llm, compiler, document="\\documentclass{article}", instruction="i", file_name="main.tex",
                       project_files=[], main_file="main.tex", attachment=att, pdf_visible=True)
-    assert "paper.pdf.txt" in loop._t_search({"pattern": "alpha"}) and "original PDF is also attached" in loop._prompt()
+    assert "paper.pdf.txt" in loop._t_search({"pattern": "alpha"}) and "original PDF is also attached" in loop._opening()
 
     async def drive():
         return [e async for e in loop.run()]

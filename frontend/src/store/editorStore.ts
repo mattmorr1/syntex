@@ -3,7 +3,7 @@ import { create } from 'zustand';
 export interface ProjectFile {
   name: string;
   content: string;
-  type: 'tex' | 'bib' | 'cls' | 'sty' | 'png' | 'jpg' | 'pdf';
+  type: 'tex' | 'bib' | 'cls' | 'sty' | 'md' | 'png' | 'jpg' | 'pdf';
 }
 
 export interface Project {

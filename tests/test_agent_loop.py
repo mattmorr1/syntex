@@ -1,5 +1,6 @@
 """Agent loop harness checks. Run: python -m pytest test_agent_loop.py"""
 import asyncio
+import itertools
 import shutil
 
 import pytest
@@ -13,15 +14,15 @@ MISSING_IMG_LOG = "! LaTeX Error: File `fig1.png' not found.\n\nl.7 \\includegra
 
 
 def scripted(*actions):
-    """LLM stub that replays actions in order and records every prompt it saw."""
+    """LLM stub that replays actions in order and records every conversation it saw (as copies)."""
     queue, prompts = list(actions), []
 
-    async def llm(prompt):
-        prompts.append(prompt)
+    async def llm(turns):
+        prompts.append(list(turns))
         nxt = queue.pop(0) if queue else {"thought": "out of script", "action": "finish", "args": {"explanation": "done"}}
         if isinstance(nxt, Exception):
             raise nxt
-        return nxt, 10
+        return nxt, 10, 0
     llm.prompts = prompts
     return llm
 
@@ -235,13 +236,62 @@ def test_provider_failure_propagates():
         run(make(llm, compiler_returning(BASE_LOG)))
 
 
-def test_history_is_pruned_but_recent_observations_stay_full():
+def test_conversation_is_append_only_so_prefix_caches():
     big = "\n".join(f"line {i}" for i in range(300))
     llm = scripted(*[act("read_file", start=1, end=200, thought=f"t{i}") for i in range(5)], act("finish", explanation=""))
-    loop = make(llm, compiler_returning(BASE_LOG), document=big, main=None)
-    run(loop)
-    last = llm.prompts[-1]
-    assert last.count("...[truncated") == 2, "only the oldest observations (beyond the last 3) are clipped"
+    run(make(llm, compiler_returning(BASE_LOG), document=big, main=None))
+    convos = llm.prompts
+    assert all(later[:len(earlier)] == earlier for earlier, later in itertools.pairwise(convos)), "every request extends the previous one"
+    assert [r for r, _ in convos[-1]] == ["user"] + ["model", "user"] * 5
+    assert "Steps used" not in convos[0][0][1] and "[steps 5/10, compiles 0/4]" in convos[-1][-1][1]
+
+
+def test_edit_result_shows_numbered_window_and_emits_draft():
+    llm = scripted(act("edit", start_line=3, end_line=3, original="Hello world.", replacement="Hi.\nThere."), act("compile"),
+                   act("finish", explanation="ok"))
+    events = run(make(llm, compiler_returning(BASE_LOG)))
+    assert "3: Hi.\n4: There.\n5: \\end{document}" in events[0]["observation"]
+    draft = next(e for e in events if e["type"] == "draft")
+    assert draft["changes"] == events[-1]["changes"] and events[-1]["status"] == "verified"
+
+
+def test_cached_tokens_are_discounted_and_reported():
+    from api.services.agent_loop import CACHE_DISCOUNT
+
+    async def llm(turns):
+        return {"thought": "", "action": "finish", "args": {"explanation": "a"}}, 1000, 800
+
+    events = run(make(llm, compiler_returning(BASE_LOG)))
+    assert events[-1]["tokens"] == 1000 - int(800 * CACHE_DISCOUNT) and events[-1]["cached"] == 800
+
+
+def test_settings_are_clamped_and_verify_off_skips_gate():
+    llm = scripted(act("edit", start_line=3, end_line=3, original="Hello world.", replacement="Hi."), act("finish", explanation="done"))
+    loop = build_loop(llm, compiler_returning(BASE_LOG), document=DOC, instruction="i", file_name="main.tex", project_files=None,
+                      main_file="main.tex", settings={"max_steps": 99, "max_compiles": -3, "verify": False})
+    events = run(loop)
+    assert (loop.max_steps, loop.max_compiles) == (30, 0) and events[-1]["status"] == "unverified"
+    assert "REJECTED" not in "".join(e.get("observation", "") for e in events)
+
+
+def test_resume_diffs_against_base_and_carries_prior_steps():
+    base, draft = DOC, DOC.replace("Hello world.", "Hello there.")
+    llm = scripted(act("edit", start_line=3, end_line=3, original="Hello there.", replacement="Hello there, all."), act("compile"),
+                   act("finish", explanation="ok"))
+    loop = build_loop(llm, compiler_returning(BASE_LOG), document=draft, instruction="continue", file_name="main.tex",
+                      project_files=None, main_file="main.tex", base_document=base,
+                      prior_steps=[{"action": "edit", "args": "lines 3-3", "observation": "applied: lines 3-3"}])
+    events = run(loop)
+    assert "PREVIOUS RUN" in llm.prompts[0][0][1] and "applied: lines 3-3" in llm.prompts[0][0][1]
+    assert events[-1]["changes"] == [{"start_line": 3, "end_line": 3, "original": "Hello world.",
+                                      "replacement": "Hello there, all.", "reason": "agent edit"}]
+
+
+def test_agents_md_is_injected_into_opening_turn():
+    llm = scripted(act("finish", explanation="ok"))
+    files = [{"name": "AGENTS.md", "content": "Use British spelling.", "type": "md"}]
+    run(make(llm, compiler_returning(BASE_LOG), files=files))
+    assert "PROJECT INSTRUCTIONS (AGENTS.md, follow them):\nUse British spelling." in llm.prompts[0][0][1]
 
 
 @pytest.mark.skipif(not shutil.which("pdflatex"), reason="pdflatex not installed")
@@ -270,8 +320,8 @@ def test_schema_requires_every_arg_and_nulls_are_dropped():
     script = [{"thought": "", "action": "read_file", "args": {**nulls, "start": 1}},
               {"thought": "", "action": "finish", "args": {**nulls, "explanation": "done"}}]
 
-    async def llm(prompt):
-        return script.pop(0), 0
+    async def llm(turns):
+        return script.pop(0), 0, 0
 
     async def compiler(files, main):
         return True, ""
@@ -285,8 +335,8 @@ def test_schema_requires_every_arg_and_nulls_are_dropped():
 def test_budget_stop_explains_why_and_echoes_bad_edit_args():
     from api.services.agent_loop import MAX_STEPS, build_loop
 
-    async def llm(prompt):
-        return {"thought": "I will edit", "action": "edit", "args": {"start_line": 1}}, 0
+    async def llm(turns):
+        return {"thought": "I will edit", "action": "edit", "args": {"start_line": 1}}, 0, 0
 
     async def compiler(files, main):
         return True, ""
@@ -300,3 +350,29 @@ def test_budget_stop_explains_why_and_echoes_bad_edit_args():
 
 async def _collect(loop):
     return [e async for e in loop.run()]
+
+
+def test_gemini_multiturn_payload_and_cached_usage(monkeypatch):
+    from api.services import gemini as g
+    sent = {}
+
+    class Resp:
+        status_code = 200
+
+        def json(self):
+            return {"candidates": [{"content": {"parts": [{"text": '{"thought":"","action":"finish","args":{}}'}]}, "finishReason": "STOP"}],
+                    "usageMetadata": {"totalTokenCount": 900, "cachedContentTokenCount": 600}}
+
+    async def post(client, url, headers, payload):
+        sent.update(payload)
+        return Resp()
+
+    monkeypatch.setattr(g.gemini_service, "_post_with_retry", post)
+    usage = {}
+    turns = [("user", "rules"), ("model", "{}"), ("user", "obs")]
+    _, tokens = asyncio.run(g.gemini_service._call_gemini_api("m", "", api_key="k", images=["data:application/pdf;base64,AA=="],
+                                                              thinking_level="low", turns=turns, usage_out=usage))
+    assert [c["role"] for c in sent["contents"]] == ["user", "model", "user"]
+    assert "inline_data" in sent["contents"][0]["parts"][0] and sent["contents"][0]["parts"][1] == {"text": "rules"}
+    assert sent["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "low"}
+    assert tokens == 900 and usage["cachedContentTokenCount"] == 600

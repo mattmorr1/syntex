@@ -8,6 +8,8 @@ import json as json_lib
 import logging
 import re
 
+import anyio
+
 logger = logging.getLogger(__name__)
 
 from api.models.schemas import (
@@ -170,6 +172,8 @@ async def agent_edit_stream(request: AgentEditRequest, user: dict = Depends(get_
                 request.document, request.instruction, model, selection=selection_dict,
                 project_files=request.project_files, file_name=request.file_name,
                 cursor_line=request.cursor_line, main_file=request.main_file, attachment=attachment,
+                settings=request.settings.model_dump(), base_document=request.base_document,
+                prior_steps=[s.model_dump() for s in request.prior_steps],
             ):
                 total_tokens = event["tokens"] if event["type"] == "result" else total_tokens + event.get("tokens", 0)
                 yield f"data: {json_lib.dumps(event)}\n\n"
@@ -177,13 +181,15 @@ async def agent_edit_stream(request: AgentEditRequest, user: dict = Depends(get_
             logger.exception("agent run failed for uid=%s", user["uid"])
             yield f"data: {json_lib.dumps({'type': 'error', 'message': 'An error occurred while processing your request.'})}\n\n"
         finally:
+            # Stop disconnects the client, which cancels this generator; shield so a stopped run is still billed.
             if total_tokens > 0:
                 tier = {"flash_tokens": total_tokens} if model == "flash" else {"pro_tokens": total_tokens}
-                try:
-                    await db_service.update_user_tokens(user["uid"], **tier)
-                    await db_service.update_monthly_tokens(user["uid"], **tier)
-                except Exception:
-                    logger.exception("token accounting failed for uid=%s (%d tokens)", user["uid"], total_tokens)
+                with anyio.CancelScope(shield=True):
+                    try:
+                        await db_service.update_user_tokens(user["uid"], **tier)
+                        await db_service.update_monthly_tokens(user["uid"], **tier)
+                    except Exception:
+                        logger.exception("token accounting failed for uid=%s (%d tokens)", user["uid"], total_tokens)
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(

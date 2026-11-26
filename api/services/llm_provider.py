@@ -197,29 +197,32 @@ class LLMProvider:
 
     # ── Agent loop (ReAct, JSON actions) ─────────────────────────────────────
 
-    async def complete_json(self, model: str, prompt: str, schema: Dict[str, Any], images: Optional[List[str]] = None,
-                            cached_content: Optional[str] = None) -> Tuple[Dict[str, Any], int]:
-        """One structured step; raises ValueError (incl. JSONDecodeError) on a non-object response."""
+    async def complete_json(self, model: str, turns: List[Tuple[str, str]], schema: Dict[str, Any], images: Optional[List[str]] = None,
+                            cached_content: Optional[str] = None, thinking: Optional[str] = None) -> Tuple[Dict[str, Any], int, int]:
+        """One structured step over a (role, text) conversation -> (object, total tokens, cached tokens); ValueError on a non-object."""
+        usage: Dict[str, Any] = {}
         if self.provider == "gemini":
             from api.services.gemini import gemini_service, FLASH_MODEL, PRO_MODEL
             text, tokens = await gemini_service._call_api(
-                FLASH_MODEL if model == "flash" else PRO_MODEL, prompt, temperature=0.2, max_tokens=4096,
-                response_schema=schema, api_key=self.api_key, images=images, cached_content=cached_content)
+                FLASH_MODEL if model == "flash" else PRO_MODEL, "", temperature=0.2, max_tokens=4096, response_schema=schema,
+                api_key=self.api_key, images=images, cached_content=cached_content, thinking_level=thinking, turns=turns, usage_out=usage)
         else:
-            text, tokens = await self._lc_call(model, f"{prompt}\n\nReturn ONLY a JSON object matching: {json.dumps(schema)}", 0.2, 4096)
+            convo = "\n\n".join(f"[{'assistant' if r == 'model' else 'user'}]\n{t}" for r, t in turns)
+            text, tokens = await self._lc_call(model, f"{convo}\n\nReturn ONLY a JSON object matching: {json.dumps(schema)}", 0.2, 4096)
         clean = text.strip()
         if clean.startswith("```"):
             clean = clean.split("\n", 1)[-1].rsplit("```", 1)[0]
         data = json.loads(clean)
         if not isinstance(data, dict):
             raise ValueError("response is not a JSON object")
-        return data, tokens
+        return data, tokens, int(usage.get("cachedContentTokenCount", 0))
 
     async def agent_run_stream(
         self, document: str, instruction: str, model: str = "pro",
         selection: Optional[dict] = None, project_files: Optional[List[Dict]] = None,
         file_name: Optional[str] = None, cursor_line: Optional[int] = None, main_file: Optional[str] = None,
-        attachment: Optional[Dict[str, Any]] = None,
+        attachment: Optional[Dict[str, Any]] = None, settings: Optional[Dict[str, Any]] = None,
+        base_document: Optional[str] = None, prior_steps: Optional[List[Dict[str, Any]]] = None,
     ) -> AsyncGenerator:
         from api.services.agent_loop import ACTION_SCHEMA, build_loop
         from api.services.latex import latex_service
@@ -236,13 +239,16 @@ class LLMProvider:
                     hashlib.sha256(attachment["pdf"].encode()).hexdigest(), display_name="chat_pdf")
             images = None if cache else [url]
 
-        async def llm(prompt: str) -> Tuple[Dict[str, Any], int]:
-            return await self.complete_json(model, prompt, ACTION_SCHEMA, images=images, cached_content=cache)
+        thinking = (settings or {}).get("thinking") or "low"
+
+        async def llm(turns: List[Tuple[str, str]]) -> Tuple[Dict[str, Any], int, int]:
+            return await self.complete_json(model, turns, ACTION_SCHEMA, images=images, cached_content=cache, thinking=thinking)
 
         loop = build_loop(llm, latex_service.compile_log, document=document, instruction=instruction,
                           file_name=file_name, project_files=project_files, main_file=main_file,
                           selection=selection, cursor_line=cursor_line, attachment=attachment,
-                          pdf_visible=bool(images or cache))
+                          pdf_visible=bool(images or cache), settings=settings, base_document=base_document,
+                          prior_steps=prior_steps)
         async for event in loop.run():
             yield event
 
