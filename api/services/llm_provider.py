@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 from typing import Optional, Tuple, Dict, Any, List, AsyncGenerator
@@ -196,13 +197,14 @@ class LLMProvider:
 
     # ── Agent loop (ReAct, JSON actions) ─────────────────────────────────────
 
-    async def complete_json(self, model: str, prompt: str, schema: Dict[str, Any]) -> Tuple[Dict[str, Any], int]:
+    async def complete_json(self, model: str, prompt: str, schema: Dict[str, Any], images: Optional[List[str]] = None,
+                            cached_content: Optional[str] = None) -> Tuple[Dict[str, Any], int]:
         """One structured step; raises ValueError (incl. JSONDecodeError) on a non-object response."""
         if self.provider == "gemini":
             from api.services.gemini import gemini_service, FLASH_MODEL, PRO_MODEL
             text, tokens = await gemini_service._call_api(
-                FLASH_MODEL if model == "flash" else PRO_MODEL, prompt, temperature=0.2,
-                max_tokens=4096, response_schema=schema, api_key=self.api_key)
+                FLASH_MODEL if model == "flash" else PRO_MODEL, prompt, temperature=0.2, max_tokens=4096,
+                response_schema=schema, api_key=self.api_key, images=images, cached_content=cached_content)
         else:
             text, tokens = await self._lc_call(model, f"{prompt}\n\nReturn ONLY a JSON object matching: {json.dumps(schema)}", 0.2, 4096)
         clean = text.strip()
@@ -217,16 +219,30 @@ class LLMProvider:
         self, document: str, instruction: str, model: str = "pro",
         selection: Optional[dict] = None, project_files: Optional[List[Dict]] = None,
         file_name: Optional[str] = None, cursor_line: Optional[int] = None, main_file: Optional[str] = None,
+        attachment: Optional[Dict[str, Any]] = None,
     ) -> AsyncGenerator:
         from api.services.agent_loop import ACTION_SCHEMA, build_loop
         from api.services.latex import latex_service
 
+        # Gemini also sees the PDF itself (cached once per run; inline when below the cache floor).
+        images, cache = None, None
+        if attachment and self.provider == "gemini":
+            from api.services.gemini import FLASH_MODEL, PRO_MODEL, gemini_service
+            url = f"data:application/pdf;base64,{attachment['pdf']}"
+            key = gemini_service.get_api_key(self.api_key)
+            if key:
+                cache = await gemini_service._create_cached_content(
+                    gemini_service._build_image_parts([url]), FLASH_MODEL if model == "flash" else PRO_MODEL, key,
+                    hashlib.sha256(attachment["pdf"].encode()).hexdigest(), display_name="chat_pdf")
+            images = None if cache else [url]
+
         async def llm(prompt: str) -> Tuple[Dict[str, Any], int]:
-            return await self.complete_json(model, prompt, ACTION_SCHEMA)
+            return await self.complete_json(model, prompt, ACTION_SCHEMA, images=images, cached_content=cache)
 
         loop = build_loop(llm, latex_service.compile_log, document=document, instruction=instruction,
                           file_name=file_name, project_files=project_files, main_file=main_file,
-                          selection=selection, cursor_line=cursor_line)
+                          selection=selection, cursor_line=cursor_line, attachment=attachment,
+                          pdf_visible=bool(images or cache))
         async for event in loop.run():
             yield event
 

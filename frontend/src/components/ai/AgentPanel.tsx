@@ -25,6 +25,8 @@ import { useThemeStore } from '../../store/themeStore';
 import { useSettingsStore } from '../../store/settingsStore';
 import { api, AgentStep, AgentResult } from '../../services/api';
 
+const PDF_MAX_BYTES = 10 * 1024 * 1024;
+
 interface DiffChange {
   start_line: number;
   end_line: number;
@@ -113,6 +115,8 @@ export function AgentPanel({
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [lastInstruction, setLastInstruction] = useState('');
   const [dismissedError, setDismissedError] = useState(false);
+  const [pdf, setPdf] = useState<{ name: string; data: string } | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
   // @file autocomplete
   const [atSuggestions, setAtSuggestions] = useState<string[]>([]);
   const [atQuery, setAtQuery] = useState('');
@@ -162,6 +166,18 @@ export function AgentPanel({
     setAtSuggestions([]);
     setAtQuery('');
     inputRef.current?.focus();
+  };
+
+  const handlePickPdf = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (file.type !== 'application/pdf') { setError('Only PDF files can be attached.'); return; }
+    if (file.size > PDF_MAX_BYTES) { setError('PDF must be 10MB or smaller.'); return; }
+    const reader = new FileReader();
+    reader.onload = () => setPdf({ name: file.name, data: String(reader.result).split(',', 2)[1] ?? '' });
+    reader.onerror = () => setError(`Could not read ${file.name}.`);
+    reader.readAsDataURL(file);
   };
 
   const handleSubmit = useCallback(async () => {
@@ -226,13 +242,14 @@ export function AgentPanel({
         cursorLine,
         mainFile,
         (step) => setSteps(prev => [...prev, step]),
+        pdf ?? undefined,
       );
     } catch (err: any) {
       setError(err.message || 'Failed to process request');
     } finally {
       setLoading(false);
     }
-  }, [instruction, lastInstruction, explanation, changes, tokensUsed, projectId, document, fileName, mainFile, aiModel, selection, cursorLine, compileError, dismissedError, projectFiles]);
+  }, [instruction, lastInstruction, explanation, changes, tokensUsed, projectId, document, fileName, mainFile, aiModel, selection, cursorLine, compileError, dismissedError, projectFiles, pdf]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (atSuggestions.length > 0 && (e.key === 'Escape')) {
@@ -335,7 +352,7 @@ export function AgentPanel({
               p: 1,
               mb: 1,
             }}>
-              <Typography sx={{ fontSize: 11, lineHeight: 1.5, color: 'text.secondary' }}>
+              <Typography sx={{ fontSize: 11, lineHeight: 1.5, color: 'text.primary', whiteSpace: 'pre-wrap' }}>
                 {entry.explanation}
               </Typography>
               {entry.tokensUsed > 0 && (
@@ -389,7 +406,7 @@ export function AgentPanel({
                 />
               )}
             </Box>
-            <Typography sx={{ fontSize: 12, lineHeight: 1.5, color: 'text.secondary' }}>
+            <Typography sx={{ fontSize: 12, lineHeight: 1.5, color: 'text.primary', whiteSpace: 'pre-wrap' }}>
               {explanation}
             </Typography>
             {tokensUsed > 0 && (
@@ -530,7 +547,16 @@ export function AgentPanel({
               '& textarea': { lineHeight: 1.4, px: 1, py: 1 },
             }}
           />
-          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', px: 1, pb: 1 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, px: 1, pb: 1 }}>
+            <input ref={fileRef} type="file" accept="application/pdf" hidden onChange={handlePickPdf} />
+            <IconButton size="small" onClick={() => fileRef.current?.click()} disabled={loading} title="Attach a PDF" sx={{ p: 0.5, color: 'text.secondary' }}>
+              <AttachFile sx={{ fontSize: 14 }} />
+            </IconButton>
+            {pdf && (
+              <Chip label={pdf.name} size="small" variant="outlined" onDelete={() => setPdf(null)}
+                sx={{ height: 20, fontSize: 10, maxWidth: 160, '& .MuiChip-label': { overflow: 'hidden', textOverflow: 'ellipsis' } }} />
+            )}
+            <Box sx={{ flex: 1 }} />
             <IconButton
               onClick={handleSubmit}
               disabled={loading || !instruction.trim()}

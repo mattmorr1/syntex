@@ -260,3 +260,43 @@ def test_real_compile_catches_introduced_error():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+def test_schema_requires_every_arg_and_nulls_are_dropped():
+    from api.services.agent_loop import ACTION_SCHEMA, ARG_TYPES, build_loop
+    args_schema = ACTION_SCHEMA["properties"]["args"]
+    assert set(args_schema["required"]) == set(ARG_TYPES) and all(p["nullable"] for p in args_schema["properties"].values())
+    nulls = dict.fromkeys(ARG_TYPES)
+    script = [{"thought": "", "action": "read_file", "args": {**nulls, "start": 1}},
+              {"thought": "", "action": "finish", "args": {**nulls, "explanation": "done"}}]
+
+    async def llm(prompt):
+        return script.pop(0), 0
+
+    async def compiler(files, main):
+        return True, ""
+
+    loop = build_loop(llm, compiler, document="\\documentclass{article}\nx", instruction="i", file_name="main.tex",
+                      project_files=[], main_file="main.tex")
+    events = asyncio.run(_collect(loop))
+    assert loop.steps[0].args == {"start": 1} and events[-1]["explanation"] == "done"
+
+
+def test_budget_stop_explains_why_and_echoes_bad_edit_args():
+    from api.services.agent_loop import MAX_STEPS, build_loop
+
+    async def llm(prompt):
+        return {"thought": "I will edit", "action": "edit", "args": {"start_line": 1}}, 0
+
+    async def compiler(files, main):
+        return True, ""
+
+    loop = build_loop(llm, compiler, document="\\documentclass{article}", instruction="i", file_name="main.tex",
+                      project_files=[], main_file="main.tex")
+    result = asyncio.run(_collect(loop))[-1]
+    assert len(loop.steps) == MAX_STEPS and "end_line=None" in loop.steps[0].observation
+    assert result["status"] == "no_changes" and "[Stopped (step budget)" in result["explanation"]
+
+
+async def _collect(loop):
+    return [e async for e in loop.run()]

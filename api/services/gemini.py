@@ -17,11 +17,69 @@ FLASH_MODEL = os.getenv("GEMINI_FLASH_MODEL", "gemini-3.8-flash")
 PRO_MODEL = os.getenv("GEMINI_PRO_MODEL", "gemini-3.1-pro-preview")
 # Concurrent section fills. Unbounded fan-out on a long paper collected 429s, which the
 # TokenLimitError path then turned into silently truncated sections.
-SECTION_CONCURRENCY = int(os.getenv("SECTION_CONCURRENCY", "4"))
+SECTION_CONCURRENCY = int(os.getenv("SECTION_CONCURRENCY", "6"))
 GEMINI_MAX_RETRIES = int(os.getenv("GEMINI_MAX_RETRIES", "4"))
-# Roughly 20 pages of academic text. Named so callers can warn on the same number rather
-# than silently dropping the tail of a long paper.
-MAX_SOURCE_CHARS = int(os.getenv("MAX_SOURCE_CHARS", "40000"))
+# Chunked generation fills each section from its own span, so it scales to ~60 pages within the
+# 600s request deadline; single-pass must fit one prompt and keeps the old ~20-page cap.
+MAX_SOURCE_CHARS = int(os.getenv("MAX_SOURCE_CHARS", "120000"))
+SINGLE_PASS_CHARS = int(os.getenv("SINGLE_PASS_CHARS", "40000"))
+SPLIT_CHARS = int(os.getenv("SPLIT_CHARS", "12000"))
+MAX_SPLIT_DEPTH = 2
+
+_SUBHEAD = re.compile(r"\n[ \t]*(?:\d+\.\d+(?:\.\d+)*\.?|[A-Z]\.\d+\.?)[ \t]+\S[^\n]{0,120}\n")
+_PARA = re.compile(r"\n[ \t]*\n")
+_LINE = re.compile(r"\n")
+_SRC_EQ = re.compile(r"\((\d{1,3})\)[ \t]*$", re.MULTILINE)
+_SRC_TAB = re.compile(r"^[ \t]*Table[ \t]+(\d+)[.:]", re.MULTILINE | re.IGNORECASE)
+_TEX_EQ_ENV = re.compile(r"\\begin\{(equation|align|gather|multline|eqnarray|flalign)(\*?)\}(.*?)\\end\{\1\2\}", re.DOTALL)
+_TEX_DISPLAY = re.compile(r"(?<!\\)\\\[")
+_TEX_TAB = re.compile(r"\\begin\{(?:tabular|tabularx|longtable)\*?\}")
+_LABEL = re.compile(r"\\label\{([^}]+)\}")
+_REF = re.compile(r"\\(ref|eqref|cref|Cref|autoref|pageref|vref)\{([^}]+)\}")
+
+
+def split_source(text: str, limit: int) -> List[str]:
+    """Split at the subsection heading, else paragraph break, else newline nearest the middle; recurse until pieces fit."""
+    if len(text) <= limit:
+        return [text]
+    n = len(text)
+    cuts = next(([m.start() + 1 for m in rx.finditer(text, n // 4, 3 * n // 4)] for rx in (_SUBHEAD, _PARA, _LINE)
+                 if rx.search(text, n // 4, 3 * n // 4)), [n // 2])
+    cut = min(cuts, key=lambda c: abs(c - n // 2))
+    return split_source(text[:cut], limit) + split_source(text[cut:], limit)
+
+
+def source_counts(text: str) -> Tuple[int, int]:
+    """(numbered equations, table captions) in a flattened text extract."""
+    return len(set(_SRC_EQ.findall(text))), len(set(_SRC_TAB.findall(text)))
+
+
+def latex_counts(tex: str) -> Tuple[int, int]:
+    """(display equation rows, tabulars) in generated LaTeX; multi-row environments count each row."""
+    rows = sum(1 if env in ("equation", "multline") else max(1, sum(1 for r in re.split(r"\\\\", body) if r.strip()))
+               for env, _, body in _TEX_EQ_ENV.findall(tex))
+    return rows + len(_TEX_DISPLAY.findall(tex)), len(_TEX_TAB.findall(tex))
+
+
+def reconcile_refs(tex: str) -> Tuple[str, List[str]]:
+    """Point each \\ref at the label it most plausibly means (prefix/case/punctuation-insensitive); return unresolved keys."""
+    labels = set(_LABEL.findall(tex))
+    norm = lambda k: re.sub(r"[^a-z0-9]", "", k.rsplit(":", 1)[-1].lower())
+    by_norm: Dict[str, Optional[str]] = {}
+    for label in labels:
+        by_norm[norm(label)] = None if norm(label) in by_norm else label
+    unresolved: List[str] = []
+
+    def fix(m: re.Match) -> str:
+        keys = []
+        for k in (s.strip() for s in m.group(2).split(",")):
+            hit = k if k in labels else by_norm.get(norm(k))
+            if hit is None:
+                unresolved.append(k)
+            keys.append(hit or k)
+        return f"\\{m.group(1)}{{{','.join(keys)}}}"
+
+    return _REF.sub(fix, tex), sorted(set(unresolved))
 
 class TokenLimitError(Exception):
     """Raised when response is truncated due to max_tokens limit."""
@@ -618,12 +676,26 @@ Return ONLY the completion text, nothing else. No explanations."""
         inventory: str, theme_desc: str, cls_instruction: str,
         api_key: Optional[str], max_tokens: int,
         images: Optional[List[str]] = None, figure_names: Optional[List[str]] = None,
-        cached_content: Optional[str] = None
-    ) -> Tuple[str, int]:
+        cached_content: Optional[str] = None, opens_section: bool = True,
+        part_label: Optional[str] = None, feedback: str = ""
+    ) -> Tuple[str, int, bool]:
         """
-        Pass 2: Pro fills one section with full token budget.
-        Returns (latex_body, tokens) — no preamble, no \\begin{document}.
+        Pass 2: Pro fills one section, or one part of a split section.
+        Returns (latex_body, tokens, truncated) — no preamble, no \\begin{document}.
         """
+        source_note = (
+            "The original PDF is attached. Transcribe equations, tables and numbers for this "
+            "part from the PDF; the source text below is a flattened extract that locates it.\n\n"
+        ) if cached_content else ""
+        part_note = "" if part_label is None else (
+            f"This is {part_label} of the section. Output \\section{{{heading}}} and then ONLY "
+            "the content of the source text below; stop where it stops.\n\n"
+        ) if opens_section else (
+            f"This is {part_label} of section '{heading}', continuing directly after the previous "
+            "part. Do NOT output \\section. Convert ONLY the source text below (use \\subsection "
+            "for any subheading in it).\n\n"
+        )
+        feedback_block = f"CORRECTION REQUIRED: {feedback}\n\n" if feedback else ""
         inventory_block = (
             "CONTENT CHECKLIST for this section (all items MUST appear):\n"
             f"{inventory}\n\n"
@@ -652,10 +724,12 @@ Return ONLY the completion text, nothing else. No explanations."""
             "- Use p{} or X columns for text-heavy columns, never wide l/c/r.\n"
             "- For figures use [width=0.7\\textwidth] or smaller — NEVER [width=\\textwidth].\n"
             "- Use \\cite{key} for citations (biblatex). Do NOT use \\t for indentation — just start text directly.\n\n"
+            f"{part_note}"
             f"{cls_instruction}"
             f"{inventory_block}"
             f"{figures_block}"
             f"{source_note}"
+            f"{feedback_block}"
             f"PREAMBLE CONTEXT (for package awareness — do not repeat):\n{preamble[:1500]}\n\n"
             f"SOURCE TEXT FOR THIS SECTION:\n{section_text}\n\n"
             "BEGIN LATEX SECTION OUTPUT NOW:\n"
@@ -667,41 +741,8 @@ Return ONLY the completion text, nothing else. No explanations."""
                 cached_content=cached_content, thinking_level="low"
             )
         except TokenLimitError as e:
-            # Partial section content is better than a missing section
-            return self._strip_code_fences(e.partial_text), e.tokens
-        return self._strip_code_fences(text), tokens
-
-    async def _fix_labels(self, latex: str, api_key: Optional[str]) -> str:
-        """
-        Pass 3: Flash normalises \\label / \\ref names across the stitched document.
-        Returns fixed LaTeX or original on failure.
-        """
-        if len(latex) > 80000:
-            return latex  # too large to fix in one pass — skip
-        prompt = (
-            "The LaTeX document below was assembled from independently generated sections. "
-            "Ensure all \\label{} and \\ref{} names are consistent — if a \\ref{} has no "
-            "matching \\label{}, fix one of them. Do NOT change any mathematical content, "
-            "text, or structure. Return ONLY the corrected LaTeX.\n\n"
-            f"{latex}"
-        )
-        try:
-            text, _ = await self._call_api(
-                FLASH_MODEL, prompt, temperature=0.0,
-                max_tokens=65536, api_key=api_key
-            )
-        except TokenLimitError as e:
-            # Use partial output if it's still a complete document
-            fixed = self._strip_code_fences(e.partial_text)
-            return fixed if r"\end{document}" in fixed else latex
-        except Exception as e:
-            print(f"_fix_labels failed: {e}")
-            return latex
-        fixed = self._strip_code_fences(text)
-        # Sanity check: result should still contain \end{document}
-        if r"\end{document}" in fixed:
-            return fixed
-        return latex
+            return self._strip_code_fences(e.partial_text), e.tokens, True
+        return self._strip_code_fences(text), tokens, False
 
     @staticmethod
     def _extract_abstract(content: str) -> str:
@@ -788,9 +829,9 @@ Return ONLY the completion text, nothing else. No explanations."""
         max_tokens: int,
         image_names: Optional[List[str]] = None,
         source_pdf: Optional[str] = None
-    ) -> Optional[Tuple[str, int]]:
+    ) -> Optional[Tuple[str, int, Dict[str, Any]]]:
         """
-        Three-pass section-chunked generation. Returns (latex, total_tokens) or None on failure.
+        Section-chunked generation. Returns (latex, total_tokens, report) or None on failure.
         """
         # Figures were saved under these names before generation; map them so each section
         # fill receives only its own, instead of every figure or (until now) none at all.
@@ -841,65 +882,77 @@ Return ONLY the completion text, nothing else. No explanations."""
                 # Not fatal: fills fall back to the text slice, which is today's behaviour.
                 print("_generate_document_chunked: PDF not cached, sections use text only")
 
-        # Pass 2: fill sections, bounded so a long document cannot fire dozens of
-        # concurrent calls and collect rate-limit truncations instead of content.
+        # Pass 2: fill. The gate bounds each model call (not each section) so nested splits cannot deadlock it.
         gate = asyncio.Semaphore(SECTION_CONCURRENCY)
+        report: Dict[str, Any] = {"path": "chunked", "sections": len(sections), "parts": 0,
+                                  "truncated": [], "incomplete": [], "failed": []}
 
-        async def fill_one(section: Dict, idx: int) -> Tuple[int, str, int]:
-            src_start, src_end = spans[idx]
-            section_text = content[src_start:src_end]
-            if not section_text.strip():
-                section_text = content[max(0, src_start - 500): min(len(content), src_end + 500)]
-
+        async def fill_piece(text: str, heading: str, opens: bool, label: Optional[str],
+                             names: List[str], depth: int) -> Tuple[str, int]:
+            inv = ""
+            if len(text) > 500:
+                try:
+                    async with gate:
+                        inv = await self._extract_content_inventory(text, api_key)
+                except Exception:
+                    logger.warning("inventory failed for %r (%s); filling without checklist", heading, label, exc_info=True)
+            kw = {"images": [by_name[n] for n in names] or None, "figure_names": names or None,
+                  "cached_content": pdf_cache, "opens_section": opens, "part_label": label}
             async with gate:
-                inv = ""
-                if len(section_text) > 500:
-                    try:
-                        inv = await self._extract_content_inventory(section_text, api_key)
-                    except Exception as inv_err:
-                        # Non-fatal: the section is still filled, just without a checklist.
-                        print(f"  inventory failed for section {idx} ({section.get('heading')}): {inv_err}")
+                body, tokens, cut = await self._fill_section(text, heading, preamble, inv, theme_desc,
+                                                             cls_instruction, api_key, max_tokens, **kw)
+            where = f"{heading} ({label})" if label else heading
+            if cut and depth < MAX_SPLIT_DEPTH and len(text) > 2000:
+                halves = split_source(text, len(text) // 2 + 1)
+                outs = await asyncio.gather(*(fill_piece(h, heading, opens and i == 0, f"{label or 'part 1 of 1'}, sub-part {i + 1} of {len(halves)}",
+                                                         names if i == 0 else [], depth + 1) for i, h in enumerate(halves)))
+                return "\n\n".join(b for b, _ in outs), tokens + sum(t for _, t in outs)
+            if cut:
+                report["truncated"].append(where)
+                return body + "\n% WARNING: output hit the token limit here; source content after this point is missing\n", tokens
+            src, out = source_counts(text), latex_counts(body)
+            if out[0] < src[0] or out[1] < src[1]:
+                kw["feedback"] = (f"A previous attempt reproduced only {out[0]} of {src[0]} numbered equations and {out[1]} of "
+                                  f"{src[1]} tables in this source text. Reproduce EVERY equation and table.")
+                async with gate:
+                    retry, t2, cut2 = await self._fill_section(text, heading, preamble, inv, theme_desc,
+                                                               cls_instruction, api_key, max_tokens, **kw)
+                tokens += t2
+                if not cut2 and sum(latex_counts(retry)) > sum(out):
+                    body, out = retry, latex_counts(retry)
+                if out[0] < src[0] or out[1] < src[1]:
+                    report["incomplete"].append(f"{where}: equations {out[0]}/{src[0]}, tables {out[1]}/{src[1]}")
+            return body, tokens
 
-                names = self._section_figures(section, by_name)
-                body, tokens = await self._fill_section(
-                    section_text, section["heading"], preamble,
-                    inv, theme_desc, cls_instruction, api_key, max_tokens,
-                    images=[by_name[n] for n in names] or None,
-                    figure_names=names or None,
-                    cached_content=pdf_cache,
-                )
-            return idx, body, tokens
+        jobs: List[Tuple[int, Any]] = []
+        for idx, sec in enumerate(sections):
+            a, b = spans[idx]
+            text = content[a:b] if content[a:b].strip() else content[max(0, a - 500):min(len(content), b + 500)]
+            pieces, names = split_source(text, SPLIT_CHARS), self._section_figures(sec, by_name)
+            jobs += [(idx, fill_piece(p, sec["heading"], i == 0, f"part {i + 1} of {len(pieces)}" if len(pieces) > 1 else None,
+                                      names if i == 0 else [], 0)) for i, p in enumerate(pieces)]
+        report["parts"] = len(jobs)
+        results = await asyncio.gather(*(c for _, c in jobs), return_exceptions=True)
 
-        results = await asyncio.gather(
-            *[fill_one(s, i) for i, s in enumerate(sections)], return_exceptions=True
-        )
-
-        # Stitch in order
-        section_bodies: Dict[int, str] = {}
-        failed = 0
-        for res in results:
+        parts: Dict[int, List[str]] = {}
+        failed: set = set()
+        for (idx, _), res in zip(jobs, results):
             if isinstance(res, BaseException):
-                failed += 1
-                print(f"  section failed: {res}")
+                logger.error("section %d (%r) part failed", idx, sections[idx].get("heading"), exc_info=res)
+                failed.add(idx)
+                parts.setdefault(idx, []).append(f"% GENERATION FAILED for part of section '{sections[idx].get('heading')}'\n")
                 continue
-            idx, body, tokens = res
-            section_bodies[idx] = body
-            total_tokens += tokens
-
-        if failed > len(sections) // 2:
-            print(f"_generate_document_chunked: {failed}/{len(sections)} sections failed, falling back")
+            parts.setdefault(idx, []).append(res[0])
+            total_tokens += res[1]
+        report["failed"] = [sections[i].get("heading") for i in sorted(failed)]
+        if len(failed) > len(sections) // 2:
+            logger.error("_generate_document_chunked: %d/%d sections failed, falling back", len(failed), len(sections))
             return None
 
-        assembled = preamble + "\n\n"
-        for i, section in enumerate(sections):
-            assembled += section_bodies.get(i, f"% SECTION {i} MISSING\n") + "\n\n"
-        assembled += postamble
-
-        # Pass 3: fix labels (best-effort)
-        assembled = await self._fix_labels(assembled, api_key)
-
-        print(f"_generate_document_chunked: complete, {total_tokens} total tokens")
-        return self._fix_latex_artifacts(assembled), total_tokens
+        assembled = preamble + "\n\n" + "".join("\n\n".join(parts[i]) + "\n\n" for i in range(len(sections))) + postamble
+        assembled, report["unresolved_refs"] = reconcile_refs(assembled)
+        logger.info("_generate_document_chunked: complete, %d tokens, report=%s", total_tokens, json.dumps(report))
+        return self._fix_latex_artifacts(assembled), total_tokens, report
 
     # ------------------------------------------------------------------ #
 
@@ -916,7 +969,7 @@ Return ONLY the completion text, nothing else. No explanations."""
         max_tokens: int = 65536,
         image_names: Optional[List[str]] = None,
         source_pdf: Optional[str] = None
-    ) -> Tuple[str, int]:
+    ) -> Tuple[str, int, Dict[str, Any]]:
         theme_desc = custom_theme if theme == "custom" else self._get_theme_description(theme)
 
         content = content[:MAX_SOURCE_CHARS]
@@ -965,11 +1018,14 @@ Return ONLY the completion text, nothing else. No explanations."""
                     images, api_key, max_tokens, image_names, source_pdf
                 )
                 if chunked_result is not None:
-                    print("generate_document: chunked path succeeded")
                     return chunked_result
-                print("generate_document: chunked path returned None, falling back to single-pass")
-            except Exception as chunk_err:
-                print(f"generate_document: chunked path failed ({chunk_err}), falling back to single-pass")
+                logger.warning("generate_document: chunked path returned None, falling back to single-pass")
+            except Exception:
+                logger.exception("generate_document: chunked path failed, falling back to single-pass")
+
+        report: Dict[str, Any] = {"path": "single_pass", "truncated": [], "incomplete": [], "failed": [],
+                                  "source_cut_at": SINGLE_PASS_CHARS if len(content) > SINGLE_PASS_CHARS else None}
+        content = content[:SINGLE_PASS_CHARS]
 
         # ReAct step 1 — extract content inventory for substantial documents
         inventory = ""
@@ -1031,14 +1087,18 @@ Return ONLY the completion text, nothing else. No explanations."""
                     # PDF first so the model reads the real document, then the figure files.
                     current_images = ([source_pdf] + (images or [])) if source_pdf else images
                 else:
-                    tail = accumulated[-800:]
+                    # The source travels with every continuation; without it the model only sees its own
+                    # tail and drifts, which is where long methodology sections used to trail off.
                     current_prompt = (
-                        "Continue the LaTeX document from exactly where it was cut off.\n\n"
-                        f"Document so far ends with:\n{tail}\n\n"
+                        "You are converting the SOURCE DOCUMENT below to LaTeX. The output so far was cut off. "
+                        "Continue it from exactly where it stops, converting the source content that follows "
+                        "that point verbatim (every equation and table).\n\n"
+                        f"SOURCE DOCUMENT:\n{content}\n\n"
+                        f"OUTPUT SO FAR ENDS WITH:\n{accumulated[-2000:]}\n\n"
                         "Output ONLY the continuation. Do NOT repeat any content. "
                         "Continue until \\end{document}:"
                     )
-                    current_images = None
+                    current_images = [source_pdf] if source_pdf else None
 
                 text, tokens = await self._call_api(
                     PRO_MODEL, current_prompt,
@@ -1115,10 +1175,13 @@ Return ONLY the completion text, nothing else. No explanations."""
                     raise
 
         if r"\end{document}" not in accumulated:
-            # Ensure document is closed even if we ran out of iterations
-            accumulated = accumulated.rstrip() + "\n\\end{document}\n"
-
-        return self._fix_latex_artifacts(accumulated), total_tokens
+            report["truncated"].append("document: generation stopped before \\end{document}")
+            accumulated = accumulated.rstrip() + "\n% WARNING: generation stopped here; later source content is missing\n\\end{document}\n"
+        src, out = source_counts(content), latex_counts(accumulated)
+        if out[0] < src[0] or out[1] < src[1]:
+            report["incomplete"].append(f"document: equations {out[0]}/{src[0]}, tables {out[1]}/{src[1]}")
+        accumulated, report["unresolved_refs"] = reconcile_refs(accumulated)
+        return self._fix_latex_artifacts(accumulated), total_tokens, report
 
     # Maps (package_name → [regex patterns that require it]).
     # If any pattern is found in the document body and the package isn't loaded, inject it.

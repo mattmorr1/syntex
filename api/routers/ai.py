@@ -1,15 +1,19 @@
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from typing import Optional
+import asyncio
+import base64
+import binascii
 import json as json_lib
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
 from api.models.schemas import (
     AutocompleteRequest, AutocompleteResponse,
     ChatRequest, ChatResponse,
-    AgentEditRequest, AgentEditResponse, DiffChange
+    AgentEditRequest, AgentEditResponse, DiffChange, AgentAttachment
 )
 from api.services.firestore import db_service
 from api.services.llm_provider import get_provider_for_user
@@ -127,11 +131,36 @@ async def agent_edit(request: AgentEditRequest, user: dict = Depends(get_current
         )
 
 
+def _pdf_text(raw: bytes) -> str:
+    import fitz
+    with fitz.open(stream=raw, filetype="pdf") as doc:
+        return "\n".join(f"--- page {i} ---\n{page.get_text()}" for i, page in enumerate(doc, 1))
+
+
+async def _read_attachment(att: AgentAttachment) -> dict:
+    """Validate a base64 PDF and extract its text off the event loop (fitz is CPU-bound)."""
+    try:
+        raw = base64.b64decode(att.data, validate=True)
+    except binascii.Error as e:
+        raise HTTPException(status_code=400, detail="Attachment is not valid base64") from e
+    if len(raw) > Config.MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail=f"Attachment exceeds the {Config.MAX_FILE_SIZE // (1024 * 1024)}MB limit")
+    if not raw.startswith(b"%PDF-"):
+        raise HTTPException(status_code=400, detail="Attachment must be a PDF")
+    try:
+        text = await asyncio.to_thread(_pdf_text, raw)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail="Could not read the PDF") from e
+    stem = re.sub(r"[^\w.-]", "_", att.name.rsplit(".", 1)[0])[:100] or "attachment"
+    return {"name": f"{stem}.pdf.txt", "text": text, "pdf": att.data, "pages": text.count("--- page ")}
+
+
 @router.post("/agent-edit/stream")
 async def agent_edit_stream(request: AgentEditRequest, user: dict = Depends(get_current_user)):
     full_user = await _get_full_user_with_cap_check(user)
     provider = get_provider_for_user(full_user)
     model = request.model or "pro"
+    attachment = await _read_attachment(request.attachment) if request.attachment else None
 
     async def event_generator():
         total_tokens = 0
@@ -140,7 +169,7 @@ async def agent_edit_stream(request: AgentEditRequest, user: dict = Depends(get_
             async for event in provider.agent_run_stream(
                 request.document, request.instruction, model, selection=selection_dict,
                 project_files=request.project_files, file_name=request.file_name,
-                cursor_line=request.cursor_line, main_file=request.main_file,
+                cursor_line=request.cursor_line, main_file=request.main_file, attachment=attachment,
             ):
                 total_tokens = event["tokens"] if event["type"] == "result" else total_tokens + event.get("tokens", 0)
                 yield f"data: {json_lib.dumps(event)}\n\n"
