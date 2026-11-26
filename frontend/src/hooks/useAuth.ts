@@ -15,11 +15,14 @@ export function useAuth() {
   const navigate = useNavigate();
   const { user, token, isAuthenticated, setUser, setToken, logout: clearAuth } = useAuthStore();
 
+  // Blocking-function denials surface as a FirebaseError whose message carries our INVITE_REQUIRED marker.
+  const asInviteError = (err: any) =>
+    String(err?.message).includes('INVITE_REQUIRED') || err?.detail?.code === 'not_invited' ? new Error('INVITE_REQUIRED') : err;
+
   const login = useCallback(async (email: string, password: string) => {
     if (firebaseEnabled) {
-      const idToken = await loginWithEmail(email, password);
-      setToken(idToken);
-      setUser(await api.me());
+      setToken(await loginWithEmail(email, password));
+      setUser((await api.provision()).user);
     } else {
       const response = await api.login(email, password);
       setToken(response.token);
@@ -29,44 +32,39 @@ export function useAuth() {
   }, [navigate, setToken, setUser]);
 
   const register = useCallback(async (email: string, password: string, username: string, inviteCode?: string) => {
-    if (firebaseEnabled) {
-      const idToken = await registerWithEmail(email, password);
-      setToken(idToken);
-      const response = await api.register(email, password, username, inviteCode);
-      setUser(response.user);
-    } else {
+    if (!firebaseEnabled) {
       const response = await api.register(email, password, username, inviteCode);
       setToken(response.token);
       setUser(response.user);
+      navigate('/');
+      return;
+    }
+    if (inviteCode) await api.redeemInvite(inviteCode, email);
+    try {
+      setToken(await registerWithEmail(email, password));
+      setUser((await api.provision(username)).user);
+    } catch (err) {
+      throw asInviteError(err);
     }
     navigate('/');
   }, [navigate, setToken, setUser]);
 
-  const loginWithGoogle = useCallback(async (inviteCode?: string) => {
-    if (!firebaseEnabled) {
-      throw new Error('Firebase not configured');
-    }
-
-    // Reuse existing Firebase token if we already authenticated (e.g. invite code retry)
-    let idToken = token;
-    if (!idToken) {
-      const { token: newToken } = await firebaseGoogleLogin();
-      idToken = newToken;
-      setToken(idToken);
-    }
-
+  const loginWithGoogle = useCallback(async (inviteCode?: string, inviteEmail?: string) => {
+    if (!firebaseEnabled) throw new Error('Firebase not configured');
+    if (inviteCode && inviteEmail) await api.redeemInvite(inviteCode, inviteEmail);
     try {
-      const response = await api.googleAuth(idToken, inviteCode);
-      setUser(response.user);
-      navigate('/');
-    } catch (err: any) {
-      // If invite code required, throw with specific message
-      if (err.message?.includes('Invite code required')) {
-        throw new Error('INVITE_REQUIRED');
+      const { token: idToken, user: fbUser } = await firebaseGoogleLogin();
+      if (inviteEmail && fbUser.email?.toLowerCase() !== inviteEmail.trim().toLowerCase()) {
+        await logoutFirebase();
+        throw new Error(`Signed in as ${fbUser.email}, but the invite was redeemed for ${inviteEmail}. Pick that Google account.`);
       }
-      throw err;
+      setToken(idToken);
+      setUser((await api.provision()).user);
+      navigate('/');
+    } catch (err) {
+      throw asInviteError(err);
     }
-  }, [navigate, token, setToken, setUser]);
+  }, [navigate, setToken, setUser]);
 
   const logout = useCallback(async () => {
     if (firebaseEnabled) {

@@ -47,6 +47,13 @@ class RegisterRequest(BaseModel):
     username: str
     invite_code: Optional[str] = None
 
+class RedeemInviteRequest(BaseModel):
+    code: str = Field(..., min_length=4, max_length=32)
+    email: EmailStr
+
+class ProvisionRequest(BaseModel):
+    username: Optional[str] = Field(None, max_length=100)
+
 class ResetPasswordRequest(BaseModel):
     email: EmailStr
 
@@ -158,6 +165,7 @@ class AgentEditRequest(BaseModel):
     selection: Optional[SelectionContext] = None
     project_files: Optional[List[Dict]] = None  # [{name, content, type}, ...] for supporting files
     cursor_line: Optional[int] = None  # 1-based line number of the cursor in the editor
+    main_file: Optional[str] = None  # project root .tex compiled by the agent's verification step
 
 class DiffChange(BaseModel):
     start_line: int

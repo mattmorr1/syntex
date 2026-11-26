@@ -60,10 +60,10 @@ export function Register() {
     setGoogleLoading(true);
     
     try {
-      await loginWithGoogle(inviteCode || undefined);
+      await loginWithGoogle(inviteCode.trim(), email.trim());
     } catch (err: any) {
       if (err.message === 'INVITE_REQUIRED') {
-        setError('Please enter an invite code to create an account');
+        setError('That email is not invited. Check the invite code and that you chose the matching Google account.');
       } else {
         setError(err.message || 'Google signup failed');
       }
@@ -108,6 +108,18 @@ export function Register() {
             inputProps={{ style: { textTransform: 'uppercase', letterSpacing: 2 } }}
           />
 
+          <TextField
+            fullWidth
+            label="Email"
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            required
+            size="small"
+            helperText={isFirebaseEnabled ? 'For Google sign-up, use the Google account with this email' : undefined}
+            sx={{ mb: 2 }}
+          />
+
           {isFirebaseEnabled && (
             <>
               <Button
@@ -116,7 +128,7 @@ export function Register() {
                 size="large"
                 startIcon={googleLoading ? <CircularProgress size={18} /> : <Google />}
                 onClick={handleGoogleSignup}
-                disabled={googleLoading || loading || !inviteCode.trim()}
+                disabled={googleLoading || loading || !inviteCode.trim() || !email.trim()}
                 sx={{ mb: 2 }}
               >
                 Continue with Google
@@ -134,17 +146,6 @@ export function Register() {
               label="Username"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              required
-              size="small"
-              sx={{ mb: 2 }}
-            />
-
-            <TextField
-              fullWidth
-              label="Email"
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
               required
               size="small"
               sx={{ mb: 2 }}

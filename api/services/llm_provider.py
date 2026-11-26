@@ -194,6 +194,42 @@ class LLMProvider:
         result, tokens = await self._lc_agent_edit(document, instruction, model, selection)
         yield {"type": "result", "data": result, "tokens": tokens}
 
+    # ── Agent loop (ReAct, JSON actions) ─────────────────────────────────────
+
+    async def complete_json(self, model: str, prompt: str, schema: Dict[str, Any]) -> Tuple[Dict[str, Any], int]:
+        """One structured step; raises ValueError (incl. JSONDecodeError) on a non-object response."""
+        if self.provider == "gemini":
+            from api.services.gemini import gemini_service, FLASH_MODEL, PRO_MODEL
+            text, tokens = await gemini_service._call_api(
+                FLASH_MODEL if model == "flash" else PRO_MODEL, prompt, temperature=0.2,
+                max_tokens=4096, response_schema=schema, api_key=self.api_key)
+        else:
+            text, tokens = await self._lc_call(model, f"{prompt}\n\nReturn ONLY a JSON object matching: {json.dumps(schema)}", 0.2, 4096)
+        clean = text.strip()
+        if clean.startswith("```"):
+            clean = clean.split("\n", 1)[-1].rsplit("```", 1)[0]
+        data = json.loads(clean)
+        if not isinstance(data, dict):
+            raise ValueError("response is not a JSON object")
+        return data, tokens
+
+    async def agent_run_stream(
+        self, document: str, instruction: str, model: str = "pro",
+        selection: Optional[dict] = None, project_files: Optional[List[Dict]] = None,
+        file_name: Optional[str] = None, cursor_line: Optional[int] = None, main_file: Optional[str] = None,
+    ) -> AsyncGenerator:
+        from api.services.agent_loop import ACTION_SCHEMA, build_loop
+        from api.services.latex import latex_service
+
+        async def llm(prompt: str) -> Tuple[Dict[str, Any], int]:
+            return await self.complete_json(model, prompt, ACTION_SCHEMA)
+
+        loop = build_loop(llm, latex_service.compile_log, document=document, instruction=instruction,
+                          file_name=file_name, project_files=project_files, main_file=main_file,
+                          selection=selection, cursor_line=cursor_line)
+        async for event in loop.run():
+            yield event
+
     # ── LangChain call helper ─────────────────────────────────────────────────
 
     async def _lc_call(

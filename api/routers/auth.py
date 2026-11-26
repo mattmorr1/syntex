@@ -1,4 +1,6 @@
 import os
+import time
+import asyncio
 import logging
 import secrets
 from datetime import datetime, timedelta
@@ -15,7 +17,7 @@ from api.models.schemas import (
     LoginRequest, RegisterRequest, ResetPasswordRequest,
     AuthResponse, UserResponse, TokenUsage,
     UpdateProviderKeyRequest, UpdatePreferredProviderRequest, UserSettingsResponse,
-    AccessRequestCreate,
+    AccessRequestCreate, RedeemInviteRequest, ProvisionRequest,
 )
 from api.services.firestore import db_service
 from config import Config
@@ -50,6 +52,29 @@ def verify_jwt_token(token: str) -> dict:
     return jwt.decode(token, Config.JWT_SECRET, algorithms=[Config.ALGORITHM])
 
 
+LAST_ACCESS_INTERVAL_S = 300.0
+_last_access: dict[str, float] = {}
+NOT_PROVISIONED = {"code": "not_provisioned", "message": "This account has no access. Redeem an invite on the Register page."}
+
+
+async def _touch(uid: str) -> None:
+    """Throttle the last_accessed write to once per interval per uid; it ran on every request before."""
+    now = time.monotonic()
+    if now - _last_access.get(uid, 0.0) >= LAST_ACCESS_INTERVAL_S:
+        _last_access[uid] = now
+        await db_service.update_last_accessed(uid)
+
+
+async def _provisioned(uid: str) -> dict:
+    """Only a Firestore user doc grants access; a valid Firebase identity alone never does."""
+    user = await db_service.get_user(uid)
+    if not user:
+        logger.warning("Rejected authenticated but unprovisioned uid=%s", uid)
+        raise HTTPException(status_code=403, detail=NOT_PROVISIONED)
+    await _touch(uid)
+    return user
+
+
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     if not credentials:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -69,33 +94,40 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         except JWTError:
             raise HTTPException(status_code=401, detail="Invalid token")
 
-    # Production: try Firebase ID token first, then local JWT
+    # Production: Firebase ID token first, then the locally-signed admin JWT (InvalidIdTokenError: "no kid claim").
     try:
-        decoded = auth.verify_id_token(token)
-        user = await db_service.get_user(decoded["uid"])
-        if user:
-            await db_service.update_last_accessed(decoded["uid"])
-            return user
-        return {"uid": decoded["uid"], "email": decoded.get("email", ""), "role": "user"}
-    except auth.ExpiredIdTokenError:
+        uid = auth.verify_id_token(token)["uid"]
+    except auth.ExpiredIdTokenError as e:
         logger.info("Expired Firebase ID token presented")
-        raise HTTPException(status_code=401, detail="Token expired")
-    except Exception:
-        # Anything else means it is not a Firebase ID token — including
-        # InvalidIdTokenError, which is what a locally-signed admin JWT raises ("no kid
-        # claim"). Catching that as a hard 401 made the fallback below unreachable for the
-        # only tokens it exists to serve.
+        raise HTTPException(status_code=401, detail="Token expired") from e
+    except Exception as fb_err:
         try:
-            payload = verify_jwt_token(token)
-            uid = payload["sub"]
-            user = await db_service.get_user(uid)
-            if user:
-                await db_service.update_last_accessed(uid)
-                return user
-            return {"uid": uid, "email": payload.get("email", ""), "role": payload.get("role", "user")}
-        except JWTError:
-            logger.warning("Token failed both Firebase and JWT verification")
-            raise HTTPException(status_code=401, detail="Invalid token")
+            uid = verify_jwt_token(token)["sub"]
+        except JWTError as e:
+            logger.warning("Token failed both Firebase (%s) and JWT (%s) verification", type(fb_err).__name__, e)
+            raise HTTPException(status_code=401, detail="Invalid token") from e
+    return await _provisioned(uid)
+
+
+async def get_firebase_identity(credentials: HTTPAuthorizationCredentials = Depends(security)) -> dict:
+    """Verified Firebase identity WITHOUT the provisioning check; only for the provisioning endpoint."""
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if not db_service.enabled:
+        raise HTTPException(status_code=400, detail="Firebase required")
+    try:
+        return auth.verify_id_token(credentials.credentials)
+    except auth.ExpiredIdTokenError as e:
+        raise HTTPException(status_code=401, detail="Token expired") from e
+    except Exception as e:
+        logger.info("Firebase ID token rejected at provisioning: %s", type(e).__name__)
+        raise HTTPException(status_code=401, detail="Invalid token") from e
+
+
+def _auth_response(user: dict, token: str = "") -> AuthResponse:
+    return AuthResponse(token=token, user=UserResponse(
+        uid=user["uid"], email=user["email"], username=user.get("username") or user["email"].split("@")[0],
+        role=user.get("role", "user"), tokensUsed=TokenUsage(**user.get("tokens_used", {}))))
 
 
 async def get_admin_user(user: dict = Depends(get_current_user)):
@@ -157,136 +189,52 @@ async def login(request: Request, body: LoginRequest):
 @router.post("/register", response_model=AuthResponse)
 @limiter.limit("3/minute")
 async def register(request: Request, body: RegisterRequest):
-    request_email = body.email.lower().strip()
-
-    # Check invite code if required
-    if INVITE_ONLY and request_email != ADMIN_EMAIL:
-        if not body.invite_code:
-            raise HTTPException(status_code=400, detail="Invite code required")
-        invite = await db_service.validate_invite(body.invite_code)
-        if not invite:
+    """Dev-mode only. With Firebase, the client signs up itself and then calls /auth/provision."""
+    if db_service.enabled:
+        raise HTTPException(status_code=410, detail="Use /auth/redeem-invite, Firebase sign-up, then /auth/provision")
+    email = body.email.lower().strip()
+    if INVITE_ONLY and email != ADMIN_EMAIL:
+        if not body.invite_code or not await db_service.redeem_invite(body.invite_code, email):
             raise HTTPException(status_code=400, detail="Invalid or expired invite code")
-
-    if not db_service.enabled:
-        uid = "dev_" + str(datetime.now().timestamp())
-        user = await db_service.create_user(
-            uid=uid,
-            email=body.email,
-            username=body.username
-        )
-        if body.invite_code:
-            await db_service.use_invite(body.invite_code, user["uid"])
-        token = create_jwt_token(uid, body.email, "user")
-        return AuthResponse(
-            token=token,
-            user=UserResponse(
-                uid=user["uid"],
-                email=user["email"],
-                username=user["username"],
-                role="user",
-                tokensUsed=TokenUsage()
-            )
-        )
-
-    try:
-        role = "admin" if request_email == ADMIN_EMAIL else "user"
-
-        user_record = auth.create_user(
-            email=body.email,
-            password=body.password,
-            display_name=body.username
-        )
-
-        user = await db_service.create_user(
-            uid=user_record.uid,
-            email=body.email,
-            username=body.username,
-            role=role
-        )
-
-        # Use the invite code
-        if body.invite_code:
-            await db_service.use_invite(body.invite_code, user_record.uid)
-
-        custom_token = auth.create_custom_token(user_record.uid)
-
-        return AuthResponse(
-            token=custom_token.decode() if isinstance(custom_token, bytes) else custom_token,
-            user=UserResponse(
-                uid=user["uid"],
-                email=user["email"],
-                username=user["username"],
-                role=role,
-                tokensUsed=TokenUsage()
-            )
-        )
-    except auth.EmailAlreadyExistsError:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    except Exception as e:
-        logger.error(f"Registration error: {e}")
-        raise HTTPException(status_code=400, detail="Registration failed")
+    uid = "dev_" + str(datetime.now().timestamp())
+    user = await db_service.create_user(uid=uid, email=body.email, username=body.username)
+    return _auth_response(user, create_jwt_token(uid, body.email, "user"))
 
 
-@router.post("/google")
-async def google_auth(request: dict):
-    id_token = request.get("id_token")
-    invite_code = request.get("invite_code")
+@router.post("/redeem-invite")
+@limiter.limit("5/hour")
+async def redeem_invite(request: Request, body: RedeemInviteRequest):
+    """Bind an invite to an email before sign-up so the beforeCreate blocking function admits it."""
+    email = body.email.lower().strip()
+    if await db_service.get_user_by_email(email):
+        raise HTTPException(status_code=400, detail="Email already registered; sign in instead")
+    if not await db_service.redeem_invite(body.code, email):
+        raise HTTPException(status_code=400, detail="Invalid or expired invite code")
+    return {"message": "Invite redeemed. Create your account with this email within 24 hours.", "email": email}
 
-    if not id_token:
-        raise HTTPException(status_code=400, detail="ID token required")
 
-    if not db_service.enabled:
-        raise HTTPException(status_code=400, detail="Firebase required for Google auth")
-
-    try:
-        decoded = auth.verify_id_token(id_token)
-        uid = decoded["uid"]
-        email = decoded.get("email", "")
-        name = decoded.get("name", email.split("@")[0] if email else "user")
-
-        # Check if user already exists
-        user = await db_service.get_user(uid)
-
-        # For new users, check invite code if required
-        if not user and INVITE_ONLY and email.lower().strip() != ADMIN_EMAIL:
-            if not invite_code:
-                raise HTTPException(status_code=400, detail="Invite code required for new accounts")
-            invite = await db_service.validate_invite(invite_code)
-            if not invite:
-                raise HTTPException(status_code=400, detail="Invalid or expired invite code")
-
-        if not user:
-            role = "admin" if email.lower().strip() == ADMIN_EMAIL else "user"
-            user = await db_service.create_user(
-                uid=uid,
-                email=email,
-                username=name,
-                role=role
-            )
-            # Use the invite code for new users
-            if invite_code:
-                await db_service.use_invite(invite_code, uid)
-
-        await db_service.update_last_accessed(uid)
-
-        return AuthResponse(
-            token=id_token,
-            user=UserResponse(
-                uid=user["uid"],
-                email=user["email"],
-                username=user["username"],
-                role=user.get("role", "user"),
-                tokensUsed=TokenUsage(**user.get("tokens_used", {}))
-            )
-        )
-    except HTTPException:
-        raise
-    except auth.InvalidIdTokenError:
-        logger.warning("Invalid Firebase ID token in Google auth")
-        raise HTTPException(status_code=401, detail="Invalid token")
-    except Exception as e:
-        logger.error(f"Google auth error: {e}")
-        raise HTTPException(status_code=401, detail="Authentication failed")
+@router.post("/provision", response_model=AuthResponse)
+@limiter.limit("10/minute")
+async def provision(request: Request, body: ProvisionRequest, identity: dict = Depends(get_firebase_identity)):
+    """Idempotent: returns the existing profile, or creates it iff the email is allowlisted."""
+    uid, email = identity["uid"], (identity.get("email") or "").lower().strip()
+    if user := await db_service.get_user(uid):
+        await _touch(uid)
+        return _auth_response(user)
+    entry = await db_service.get_allowed_email(email) if email else None
+    role = "admin" if email == ADMIN_EMAIL else (entry or {}).get("role", "user")
+    if not (entry or email == ADMIN_EMAIL):
+        # Pre-blocking-function sign-ups land here; drop the orphaned Firebase account rather than keep it.
+        await asyncio.to_thread(auth.delete_user, uid)
+        logger.warning("Provision refused and Firebase user deleted: uid=%s email=%s", uid, email)
+        raise HTTPException(status_code=403, detail={"code": "not_invited", "message": "No invite has been redeemed for this email."})
+    if role == "admin" and not identity.get("email_verified"):
+        raise HTTPException(status_code=403, detail={"code": "email_unverified", "message": "Verify this email before admin access is granted."})
+    name = (body.username or identity.get("name") or email.split("@")[0]).strip()
+    user = await db_service.create_user(uid=uid, email=email, username=name, role=role)
+    await db_service.delete_allowed_email(email)
+    logger.info("Provisioned uid=%s email=%s role=%s", uid, email, role)
+    return _auth_response(user)
 
 
 @router.post("/reset-password")

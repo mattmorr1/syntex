@@ -49,3 +49,11 @@ Thumbs.db
 # !requirements.txt
 # !Dockerfile
 # !*.py
+
+# Firebase admin key: prod mounts it from Secret Manager, never upload it with build source
+config/*firebase-adminsdk*.json
+firebase-key.json
+
+# Blocking-function local env (deployed separately via firebase deploy)
+functions/venv/
+functions/.env

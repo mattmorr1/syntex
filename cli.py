@@ -137,6 +137,45 @@ This code can only be used once.
         print(f"Invite code for {to_email}: {code}")
         return False
 
+def allow_email(email: str, role: str = "user", days: int = 0):
+    """Allowlist an email for sign-up (passes the beforeCreate gate); days=0 means no expiry."""
+    from datetime import timedelta, timezone
+    db = get_firestore_client()
+    email = email.strip().lower()
+    now = datetime.now(timezone.utc)
+    db.collection("allowed_emails").document(email).set({
+        "email": email, "role": role, "invite_code": None, "source": "cli",
+        "created_at": now, "expires_at": now + timedelta(days=days) if days else None,
+    })
+    print(f"Allowlisted {email} as {role}" + (f" for {days} days" if days else " (no expiry)"))
+
+
+def set_role(email: str, role: str):
+    """Set role on an existing user doc; falls back to allowlisting with that role if none exists yet."""
+    from google.cloud.firestore_v1.base_query import FieldFilter
+    db = get_firestore_client()
+    email = email.strip().lower()
+    docs = list(db.collection("users").where(filter=FieldFilter("email", "==", email)).stream())
+    for d in docs:
+        d.reference.update({"role": role})
+        print(f"users/{d.id}: role -> {role}")
+    if not docs:
+        print(f"No user doc for {email}; allowlisting with role {role} so it applies at first sign-in")
+        allow_email(email, role)
+
+
+def orphans(apply: bool = False):
+    """Firebase Auth users with no users/{uid} doc: accounts that only existed via the old bypass."""
+    from firebase_admin import auth
+    db = get_firestore_client()
+    found = [u for u in auth.list_users().iterate_all() if not db.collection("users").document(u.uid).get().exists]
+    for u in found:
+        print(f"{u.uid}  {u.email}  providers={[p.provider_id for p in u.provider_data]}")
+        if apply:
+            auth.delete_user(u.uid)
+    print(f"{len(found)} orphan(s)" + (" deleted" if apply else "; re-run with --apply to delete"))
+
+
 def main():
     parser = argparse.ArgumentParser(description="Invite code management CLI")
     subparsers = parser.add_subparsers(dest="command", help="Commands")
@@ -158,6 +197,18 @@ def main():
     send_parser.add_argument("code", help="Invite code")
     send_parser.add_argument("email", help="Email address")
     
+    allow_parser = subparsers.add_parser("allow", help="Allowlist an email for sign-up")
+    allow_parser.add_argument("email")
+    allow_parser.add_argument("--role", choices=["user", "admin"], default="user")
+    allow_parser.add_argument("--days", type=int, default=0, help="Expiry in days (0 = never)")
+
+    role_parser = subparsers.add_parser("set-role", help="Set a user's role by email")
+    role_parser.add_argument("email")
+    role_parser.add_argument("role", choices=["user", "admin"])
+
+    orphan_parser = subparsers.add_parser("orphans", help="List Firebase users with no profile doc")
+    orphan_parser.add_argument("--apply", action="store_true", help="Delete them from Firebase Auth")
+
     args = parser.parse_args()
     
     if args.command == "create":
@@ -168,6 +219,12 @@ def main():
         deactivate_invite(args.code)
     elif args.command == "send":
         send_invite_email(args.email, args.code.upper())
+    elif args.command == "allow":
+        allow_email(args.email, args.role, args.days)
+    elif args.command == "set-role":
+        set_role(args.email, args.role)
+    elif args.command == "orphans":
+        orphans(args.apply)
     else:
         parser.print_help()
 
