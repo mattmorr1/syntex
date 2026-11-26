@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import {
   Box,
   Typography,
@@ -9,6 +9,12 @@ import {
   Collapse,
   Alert,
   Paper,
+  Popover,
+  Slider,
+  Switch,
+  ToggleButton,
+  ToggleButtonGroup,
+  Button,
 } from '@mui/material';
 import {
   Send,
@@ -20,12 +26,31 @@ import {
   SmartToy,
   ErrorOutline,
   AttachFile,
+  Stop,
+  PlayArrow,
+  Tune,
 } from '@mui/icons-material';
 import { useThemeStore } from '../../store/themeStore';
-import { useSettingsStore } from '../../store/settingsStore';
-import { api, AgentStep, AgentResult } from '../../services/api';
+import { useSettingsStore, DEFAULT_AGENT_SETTINGS, AgentSettings } from '../../store/settingsStore';
+import { api, AgentStep, AgentResult, AgentChange } from '../../services/api';
 
 const PDF_MAX_BYTES = 10 * 1024 * 1024;
+
+/** Apply non-overlapping line hunks (1-based, relative to `doc`) bottom-up so earlier offsets stay valid. */
+function applyChanges(doc: string, changes: AgentChange[]): string {
+  const lines = doc.split('\n');
+  for (const c of [...changes].sort((a, b) => b.start_line - a.start_line)) {
+    lines.splice(c.start_line - 1, c.end_line - c.start_line + 1, ...(c.replacement ? c.replacement.split('\n') : []));
+  }
+  return lines.join('\n');
+}
+
+interface StoppedRun {
+  base: string;
+  draft: string;
+  instruction: string;
+  steps: AgentStep[];
+}
 
 interface DiffChange {
   start_line: number;
@@ -103,7 +128,12 @@ export function AgentPanel({
   onClose,
 }: AgentPanelProps) {
   const { mode } = useThemeStore();
-  const { aiModel } = useSettingsStore();
+  const { aiModel, agentSettings, setAgentSettings } = useSettingsStore();
+  const harness: AgentSettings = useMemo(() => ({ ...DEFAULT_AGENT_SETTINGS, ...agentSettings[projectId] }), [agentSettings, projectId]);
+  const [settingsAnchor, setSettingsAnchor] = useState<HTMLElement | null>(null);
+  const [cachedTokens, setCachedTokens] = useState(0);
+  const [stopped, setStopped] = useState<StoppedRun | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
   const [instruction, setInstruction] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -180,76 +210,95 @@ export function AgentPanel({
     reader.readAsDataURL(file);
   };
 
-  const handleSubmit = useCallback(async () => {
-    if (!instruction.trim()) return;
-
-    // Archive current result to history before starting a new request
-    if (explanation || changes.length > 0) {
-      setHistory(prev => [...prev, {
-        instruction: lastInstruction,
-        explanation,
-        appliedCount: 0,
-        tokensUsed,
-      }]);
-    }
-
+  const runAgent = useCallback(async (runInstruction: string, base: string, working: string, prior: AgentStep[]) => {
+    const controller = new AbortController();
+    abortRef.current = controller;
+    let draft: AgentChange[] = [];
+    let runSteps: AgentStep[] = [];
     setLoading(true);
     setError('');
-    setChanges([]);
-    setExplanation('');
-    setTokensUsed(0);
-    setSteps([]);
-    setStatus(null);
-    setLastInstruction(instruction);
+    setStopped(null);
 
-    const selectionPayload = selection
+    const selectionPayload = selection && working === base
       ? { text: selection.text, start_line: selection.startLine, end_line: selection.endLine }
       : undefined;
-
-    // Build enriched instruction: prepend compile error + structure metadata
-    const structureBlock = extractLatexStructure(document);
-    const errorPrefix = (compileError && !dismissedError)
-      ? `[Last compilation error: ${compileError.slice(0, 500)}]\n\n`
-      : '';
-    const enrichedInstruction = errorPrefix + instruction + structureBlock;
-
-    // Supporting files: exclude active document content, exclude binaries
-    const supportingFiles = projectFiles?.filter(
-      f => f.content !== document && !['png', 'jpg', 'pdf'].includes(f.type)
-    );
+    const supportingFiles = projectFiles?.filter(f => f.content !== document && !['png', 'jpg', 'pdf'].includes(f.type));
+    const { autoApply, ...settings } = harness;
 
     try {
       await api.agentEditStream(
-        projectId,
-        enrichedInstruction,
-        document,
-        aiModel,
-        selectionPayload,
-        (chunk) => {
-          setExplanation((prev) => prev + chunk);
-        },
+        projectId, runInstruction, working, aiModel, selectionPayload,
+        (chunk) => setExplanation((prev) => prev + chunk),
         (result) => {
           setExplanation(result.explanation);
-          setChanges(result.changes.map((c: any) => ({ ...c })));
-          setTokensUsed(result.tokens);
+          setTokensUsed(t => t + result.tokens);
+          setCachedTokens(c => c + (result.cached ?? 0));
           setStatus(result.status);
+          if (autoApply && result.changes.length && result.status !== 'unverified') {
+            onApplyChanges(applyChanges(base, result.changes));
+            setChanges([]);
+          } else {
+            setChanges(result.changes);
+          }
         },
-        (message) => {
-          setError(message);
+        (message) => setError(message),
+        supportingFiles, fileName, cursorLine, mainFile,
+        (step) => {
+          const numbered = { ...step, step: prior.length + step.step };
+          runSteps = [...runSteps, numbered];
+          setSteps(prev => [...prev, numbered]);
         },
-        supportingFiles,
-        fileName,
-        cursorLine,
-        mainFile,
-        (step) => setSteps(prev => [...prev, step]),
         pdf ?? undefined,
+        {
+          signal: controller.signal, settings, baseDocument: working === base ? undefined : base,
+          priorSteps: prior.slice(-20).map(st => ({ action: st.action, args: st.args.slice(0, 400), observation: st.observation.slice(0, 1000) })),
+          onDraft: (d) => { draft = d; setChanges(d); },
+        },
       );
     } catch (err: any) {
-      setError(err.message || 'Failed to process request');
+      if (controller.signal.aborted) {
+        setStopped({ base, draft: applyChanges(base, draft), instruction: runInstruction, steps: [...prior, ...runSteps] });
+        setExplanation(prev => prev || `Stopped after ${prior.length + runSteps.length} steps. Review the draft below, or continue the run.`);
+      } else {
+        setError(err.message || 'Failed to process request');
+      }
     } finally {
+      abortRef.current = null;
       setLoading(false);
     }
-  }, [instruction, lastInstruction, explanation, changes, tokensUsed, projectId, document, fileName, mainFile, aiModel, selection, cursorLine, compileError, dismissedError, projectFiles, pdf]);
+  }, [projectId, document, fileName, mainFile, aiModel, selection, cursorLine, projectFiles, pdf, harness, onApplyChanges]);
+
+  const handleSubmit = useCallback(async () => {
+    if (!instruction.trim()) return;
+    if (explanation || changes.length > 0) {
+      setHistory(prev => [...prev, { instruction: lastInstruction, explanation, appliedCount: 0, tokensUsed }]);
+    }
+    setChanges([]);
+    setExplanation('');
+    setTokensUsed(0);
+    setCachedTokens(0);
+    setSteps([]);
+    setStatus(null);
+    setLastInstruction(instruction);
+    const errorPrefix = (compileError && !dismissedError) ? `[Last compilation error: ${compileError.slice(0, 500)}]\n\n` : '';
+    setInstruction('');
+    await runAgent(errorPrefix + instruction + extractLatexStructure(document), document, document, []);
+  }, [instruction, lastInstruction, explanation, changes, tokensUsed, document, compileError, dismissedError, runAgent]);
+
+  const handleContinue = useCallback(async () => {
+    if (!stopped) return;
+    const extra = instruction.trim();
+    setInstruction('');
+    setExplanation('');
+    setStatus(null);
+    await runAgent(extra ? `${stopped.instruction}\n\nAdditional guidance: ${extra}` : stopped.instruction, stopped.base, stopped.draft, stopped.steps);
+  }, [stopped, instruction, runAgent]);
+
+  const handleApplyAll = () => {
+    onApplyChanges(applyChanges(document, changes));
+    setChanges([]);
+    setStopped(null);
+  };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (atSuggestions.length > 0 && (e.key === 'Escape')) {
@@ -270,6 +319,7 @@ export function AgentPanel({
     const replacementLines = change.replacement.split('\n');
     const newLines = [...beforeLines, ...replacementLines, ...afterLines];
     onApplyChanges(newLines.join('\n'));
+    setStopped(null);
     const delta = replacementLines.length - (change.end_line - change.start_line + 1);
     setChanges(prev => prev.filter((_, i) => i !== index).map(c =>
       c.start_line > change.end_line ? { ...c, start_line: c.start_line + delta, end_line: c.end_line + delta } : c));
@@ -318,11 +368,20 @@ export function AgentPanel({
             />
           )}
         </Box>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+        <IconButton size="small" onClick={(e) => setSettingsAnchor(e.currentTarget)} title="Agent settings" sx={{ p: 0.25, color: 'text.secondary' }}>
+          <Tune sx={{ fontSize: 14 }} />
+        </IconButton>
+        <Popover open={!!settingsAnchor} anchorEl={settingsAnchor} onClose={() => setSettingsAnchor(null)}
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }} transformOrigin={{ vertical: 'top', horizontal: 'right' }}>
+          <HarnessSettings value={harness} onChange={(patch) => setAgentSettings(projectId, patch)} />
+        </Popover>
         {onClose && (
           <IconButton size="small" onClick={onClose} sx={{ p: 0.25, color: 'text.secondary' }}>
             <Close sx={{ fontSize: 14 }} />
           </IconButton>
         )}
+        </Box>
       </Box>
 
       {/* Messages */}
@@ -411,8 +470,14 @@ export function AgentPanel({
             </Typography>
             {tokensUsed > 0 && (
               <Typography sx={{ mt: 1, fontSize: 10, color: 'text.secondary', opacity: 0.6 }}>
-                {tokensUsed} tokens
+                {tokensUsed.toLocaleString()} tokens billed{cachedTokens > 0 ? ` · ${cachedTokens.toLocaleString()} served from cache` : ''}
               </Typography>
+            )}
+            {stopped && document === stopped.base && !loading && (
+              <Button size="small" startIcon={<PlayArrow sx={{ fontSize: 14 }} />} onClick={handleContinue}
+                sx={{ mt: 1, fontSize: 11, textTransform: 'none', color: 'text.primary', border: `1px solid ${accentBorder}` }}>
+                Continue run{instruction.trim() ? ' with guidance' : ''}
+              </Button>
             )}
           </Box>
         )}
@@ -421,10 +486,10 @@ export function AgentPanel({
           <Box>
             <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
               <Typography sx={{ fontSize: 10, color: 'text.secondary', fontWeight: 500 }}>
-                Changes ({changes.length})
+                {loading ? 'Draft changes' : 'Changes'} ({changes.length})
               </Typography>
-              {pendingCount > 0 && (
-                <Chip label={pendingCount} size="small" color="warning" sx={{ height: 18, fontSize: 10 }} />
+              {!loading && pendingCount > 1 && (
+                <Button size="small" onClick={handleApplyAll} sx={{ fontSize: 10, textTransform: 'none', py: 0, minWidth: 0 }}>Apply all</Button>
               )}
             </Box>
             {changes.map((change, index) => (
@@ -433,6 +498,7 @@ export function AgentPanel({
                 change={change}
                 isDark={isDark}
                 accentBorder={accentBorder}
+                readOnly={loading}
                 onAccept={() => handleAcceptChange(index)}
                 onReject={() => handleRejectChange(index)}
               />
@@ -451,7 +517,9 @@ export function AgentPanel({
         {loading && (
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, p: 1 }}>
             <CircularProgress size={12} sx={{ color: 'primary.main' }} />
-            <Typography sx={{ fontSize: 11, color: 'text.secondary' }}>Thinking...</Typography>
+            <Typography sx={{ fontSize: 11, color: 'text.secondary' }}>
+              {steps.length ? `Working · step ${steps.length + 1}` : 'Thinking'}...
+            </Typography>
           </Box>
         )}
       </Box>
@@ -557,6 +625,12 @@ export function AgentPanel({
                 sx={{ height: 20, fontSize: 10, maxWidth: 160, '& .MuiChip-label': { overflow: 'hidden', textOverflow: 'ellipsis' } }} />
             )}
             <Box sx={{ flex: 1 }} />
+            {loading && (
+              <IconButton onClick={() => abortRef.current?.abort()} size="small" title="Stop the agent"
+                sx={{ p: 0.5, borderRadius: '6px', color: 'text.primary', border: `1px solid ${accentBorder}` }}>
+                <Stop sx={{ fontSize: 14 }} />
+              </IconButton>
+            )}
             <IconButton
               onClick={handleSubmit}
               disabled={loading || !instruction.trim()}
@@ -626,11 +700,12 @@ interface CompactDiffCardProps {
   change: DiffChange;
   isDark: boolean;
   accentBorder: string;
+  readOnly?: boolean;
   onAccept: () => void;
   onReject: () => void;
 }
 
-function CompactDiffCard({ change, isDark, accentBorder, onAccept, onReject }: CompactDiffCardProps) {
+function CompactDiffCard({ change, isDark, accentBorder, readOnly, onAccept, onReject }: CompactDiffCardProps) {
   const [expanded, setExpanded] = useState(true);
 
   return (
@@ -677,15 +752,48 @@ function CompactDiffCard({ change, isDark, accentBorder, onAccept, onReject }: C
           </Box>
         </Box>
 
-        <Box sx={{ p: 0.5, display: 'flex', gap: 0.5, justifyContent: 'flex-end', bgcolor: 'background.paper' }}>
+        {!readOnly && <Box sx={{ p: 0.5, display: 'flex', gap: 0.5, justifyContent: 'flex-end', bgcolor: 'background.paper' }}>
           <IconButton size="small" color="error" onClick={(e) => { e.stopPropagation(); onReject(); }} sx={{ p: 0.25 }}>
             <Clear sx={{ fontSize: 14 }} />
           </IconButton>
           <IconButton size="small" color="success" onClick={(e) => { e.stopPropagation(); onAccept(); }} sx={{ p: 0.25 }}>
             <Check sx={{ fontSize: 14 }} />
           </IconButton>
-        </Box>
+        </Box>}
       </Collapse>
+    </Box>
+  );
+}
+
+function HarnessSettings({ value, onChange }: { value: AgentSettings; onChange: (patch: Partial<AgentSettings>) => void }) {
+  const label = (text: string, hint: string) => (
+    <Box sx={{ mb: 0.25 }}>
+      <Typography sx={{ fontSize: 11, fontWeight: 600, color: 'text.primary' }}>{text}</Typography>
+      <Typography sx={{ fontSize: 10, color: 'text.secondary' }}>{hint}</Typography>
+    </Box>
+  );
+  const toggle = (key: 'verify' | 'autoApply', text: string, hint: string) => (
+    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mt: 1 }}>
+      {label(text, hint)}
+      <Switch size="small" checked={value[key]} onChange={(e) => onChange({ [key]: e.target.checked })} />
+    </Box>
+  );
+  return (
+    <Box sx={{ p: 1.5, width: 260 }}>
+      {label(`Max steps: ${value.max_steps}`, 'Model calls per run (1-30)')}
+      <Slider size="small" min={1} max={30} value={value.max_steps} onChange={(_, v) => onChange({ max_steps: v as number })} />
+      {label(`Max compiles: ${value.max_compiles}`, 'Verification compiles per run (0-8)')}
+      <Slider size="small" min={0} max={8} value={value.max_compiles} onChange={(_, v) => onChange({ max_compiles: v as number })} />
+      {label('Thinking', 'High reasons more per step at roughly 2x output tokens')}
+      <ToggleButtonGroup size="small" exclusive value={value.thinking} onChange={(_, v) => v && onChange({ thinking: v })} sx={{ mt: 0.5 }}>
+        <ToggleButton value="low" sx={{ fontSize: 10, py: 0.25, textTransform: 'none' }}>Low</ToggleButton>
+        <ToggleButton value="high" sx={{ fontSize: 10, py: 0.25, textTransform: 'none' }}>High</ToggleButton>
+      </ToggleButtonGroup>
+      {toggle('verify', 'Require compile', 'Refuse to finish until edits compile cleanly')}
+      {toggle('autoApply', 'Auto-apply', 'Apply verified changes without review')}
+      <Typography sx={{ fontSize: 10, color: 'text.secondary', mt: 1 }}>
+        Add an AGENTS.md file to the project to give the agent standing instructions.
+      </Typography>
     </Box>
   );
 }

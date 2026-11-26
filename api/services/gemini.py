@@ -330,8 +330,12 @@ class GeminiService:
         images: Optional[List[str]] = None,
         response_schema: Optional[Dict] = None,
         cached_content: Optional[str] = None,
-        thinking_level: Optional[str] = None
+        thinking_level: Optional[str] = None,
+        turns: Optional[List[Tuple[str, str]]] = None,
+        usage_out: Optional[Dict[str, Any]] = None,
     ) -> Tuple[str, int]:
+        """`turns` [(role, text)] sends a multi-turn conversation instead of `prompt`; images go on the first turn.
+        `usage_out`, when given, receives the raw usageMetadata (cached token counts)."""
         key = self.get_api_key(api_key)
         if not key:
             return self._dev_response(prompt), 0
@@ -342,7 +346,11 @@ class GeminiService:
 
         # Build parts
         parts = self._build_image_parts(images)
-        parts.append({"text": prompt})
+        if turns:
+            contents = [{"role": r, "parts": [{"text": t}]} for r, t in turns]
+            contents[0]["parts"][:0] = parts
+        else:
+            contents = [{"parts": [*parts, {"text": prompt}]}]
 
         # Build generation config
         gen_config: Dict[str, Any] = {
@@ -362,7 +370,7 @@ class GeminiService:
             gen_config["responseSchema"] = response_schema
 
         payload: Dict[str, Any] = {
-            "contents": [{"parts": parts}],
+            "contents": contents,
             "generationConfig": gen_config,
             # Relaxed safety settings - let content through for formatting tasks
             "safetySettings": [
@@ -404,9 +412,8 @@ class GeminiService:
             # Track cached vs non-cached tokens
             usage = result.get("usageMetadata", {})
             tokens = usage.get("totalTokenCount", 0)
-            cached_tokens = usage.get("cachedContentTokenCount", 0)
-            if cached_tokens > 0:
-                print(f"Used {cached_tokens} cached tokens out of {tokens} total")
+            if usage_out is not None:
+                usage_out.update(usage)
 
             # Extract parts (available even on truncated responses)
             parts = content.get("parts", [])
@@ -442,12 +449,14 @@ class GeminiService:
         response_schema: Optional[Dict] = None,
         cached_content: Optional[str] = None,
         thinking_level: Optional[str] = None,
+        turns: Optional[List[Tuple[str, str]]] = None,
+        usage_out: Optional[Dict[str, Any]] = None,
     ) -> Tuple[str, int]:
         if not self.gemini_api_key and not api_key:
             return self._dev_response(prompt), 0
         return await self._call_gemini_api(
             model, prompt, temperature, max_tokens,
-            api_key, images, response_schema, cached_content, thinking_level
+            api_key, images, response_schema, cached_content, thinking_level, turns, usage_out
         )
 
     def _dev_response(self, prompt: str) -> str:
