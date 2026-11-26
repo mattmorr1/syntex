@@ -140,7 +140,7 @@ export function Editor() {
   // The autosave timer closes over its first render; read collab through a ref.
   const collabRef = useRef<CollabSession | null>(null);
   const [editorSelection, setEditorSelection] = useState<EditorSelection | null>(null);
-  const [newFileDialog, setNewFileDialog] = useState<{ type: 'tex' | 'bib' | 'cls'; suggested: string } | null>(null);
+  const [newFileDialog, setNewFileDialog] = useState<{ type: 'tex' | 'bib' | 'cls' | 'md'; suggested: string } | null>(null);
   const [deleteFileDialog, setDeleteFileDialog] = useState<string | null>(null);
   const [collab, setCollab] = useState<CollabSession | null>(null);
   const [collaborators, setCollaborators] = useState<Collaborator[]>([]);
@@ -297,6 +297,7 @@ export function Editor() {
     tex: '% New LaTeX file\n',
     bib: '% BibTeX references\n',
     cls: '% Custom class file\n\\ProvidesClass{custom}[2024/01/01]\n\\LoadClass{article}\n',
+    md: '# Agent instructions\n\nStanding rules the AI agent follows in this project, e.g. citation style, spelling, macros to use.\n',
   };
 
   /** Forward search: jump from the cursor to the matching place in the PDF. */
@@ -312,8 +313,8 @@ export function Editor() {
     }
   }, [pdfUrl, activeFile]);
 
-  const handleAddFile = (type: 'tex' | 'bib' | 'cls') => {
-    const names: Record<string, string> = { tex: 'newfile.tex', bib: 'references.bib', cls: 'custom.cls' };
+  const handleAddFile = (type: 'tex' | 'bib' | 'cls' | 'md') => {
+    const names: Record<string, string> = { tex: 'newfile.tex', bib: 'references.bib', cls: 'custom.cls', md: 'AGENTS.md' };
     setNewFileDialog({ type, suggested: names[type] });
     setAddMenuAnchor(null);
   };
@@ -860,6 +861,7 @@ export function Editor() {
               <MenuItem onClick={() => handleAddFile('tex')} sx={{ fontSize: 12 }}>LaTeX (.tex)</MenuItem>
               <MenuItem onClick={() => handleAddFile('bib')} sx={{ fontSize: 12 }}>Bibliography (.bib)</MenuItem>
               <MenuItem onClick={() => handleAddFile('cls')} sx={{ fontSize: 12 }}>Class (.cls)</MenuItem>
+              <MenuItem onClick={() => handleAddFile('md')} sx={{ fontSize: 12 }}>Agent instructions (AGENTS.md)</MenuItem>
               <MenuItem onClick={() => { imageInputRef.current?.click(); setAddMenuAnchor(null); }} sx={{ fontSize: 12 }}>
                 <ImageIcon sx={{ mr: 1, fontSize: 14 }} /> Image (.png / .jpg)
               </MenuItem>

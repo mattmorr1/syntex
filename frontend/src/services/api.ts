@@ -66,13 +66,38 @@ export interface AgentStep {
   args: string;
   observation: string;
   tokens: number;
+  cached: number;
   ms: number;
+}
+
+export interface AgentChange {
+  start_line: number;
+  end_line: number;
+  original: string;
+  replacement: string;
+  reason: string;
+}
+
+export interface AgentRunSettings {
+  max_steps: number;
+  max_compiles: number;
+  thinking: 'low' | 'high';
+  verify: boolean;
+}
+
+export interface AgentStreamOptions {
+  signal?: AbortSignal;
+  onDraft?: (changes: AgentChange[]) => void;
+  settings?: AgentRunSettings;
+  baseDocument?: string;
+  priorSteps?: Array<{ action: string; args: string; observation: string }>;
 }
 
 export interface AgentResult {
   explanation: string;
-  changes: any[];
+  changes: AgentChange[];
   tokens: number;
+  cached: number;
   status: 'verified' | 'unverified' | 'no_changes';
   steps: number;
   compiles: number;
@@ -250,6 +275,7 @@ export const api = {
     mainFile?: string,
     onStep?: (step: AgentStep) => void,
     attachment?: { name: string; data: string },
+    opts: AgentStreamOptions = {},
   ) => {
     const token = useAuthStore.getState().token;
     const response = await fetch(`${API_BASE}/ai/agent-edit/stream`, {
@@ -258,7 +284,12 @@ export const api = {
         'Content-Type': 'application/json',
         ...(token && { Authorization: `Bearer ${token}` }),
       },
-      body: JSON.stringify({ project_id: projectId, instruction, document, model, selection, project_files: projectFiles, file_name: fileName, cursor_line: cursorLine, main_file: mainFile, attachment }),
+      body: JSON.stringify({
+        project_id: projectId, instruction, document, model, selection, project_files: projectFiles, file_name: fileName,
+        cursor_line: cursorLine, main_file: mainFile, attachment, settings: opts.settings, base_document: opts.baseDocument,
+        prior_steps: opts.priorSteps,
+      }),
+      signal: opts.signal,
     });
 
     if (response.status === 401) {
@@ -293,6 +324,7 @@ export const api = {
             const parsed = JSON.parse(data);
             if (parsed.type === 'chunk') onChunk?.(parsed.text);
             else if (parsed.type === 'step') onStep?.(parsed);
+            else if (parsed.type === 'draft') opts.onDraft?.(parsed.changes);
             else if (parsed.type === 'result') onResult?.(parsed);
             else if (parsed.type === 'error') onError?.(parsed.message);
           } catch {
