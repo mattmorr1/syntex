@@ -464,7 +464,7 @@ async def upload_file(
 
         # Convert to LaTeX using Gemini
         try:
-            latex_content, tokens = await gemini_service.generate_document(
+            latex_content, tokens, report = await gemini_service.generate_document(
                 text_content,
                 theme,
                 custom_theme,
@@ -529,6 +529,9 @@ async def upload_file(
             {"name": "main.tex", "content": latex_content, "type": "tex"},
             {"name": "references.bib", "content": bib_content, "type": "bib"},
         ]
+        if custom_cls and custom_cls.strip():
+            project_files.append({"name": "custom.cls", "content": custom_cls, "type": "cls"})
+        report["compile_errors"] = await _compile_check(project_files, figure_names)
 
         # Add embedded images from the source document as project files (via GCS)
         pending_images: list = []
@@ -538,10 +541,6 @@ async def upload_file(
                                    "ext": img_ext_map.get(mime, "png"),
                                    "data": base64.b64decode(b64_data)})
         embedded_image_names: set = {name for name, _, _ in figures}
-
-        # Add custom class file if provided
-        if custom_cls and custom_cls.strip():
-            project_files.append({"name": "custom.cls", "content": custom_cls, "type": "cls"})
 
         project = await db_service.create_project(
             uid=user["uid"],
@@ -578,12 +577,14 @@ async def upload_file(
             if ref not in embedded_image_names
         ]
 
+        used = min(len(text_content), report.get("source_cut_at") or MAX_SOURCE_CHARS)
         return {
             "project_id": project_id,
             "tokens_used": tokens,
             "missing_images": missing_images,
-            "truncated": truncated,
-            "source_chars_used": min(len(text_content), MAX_SOURCE_CHARS),
+            "truncated": used < len(text_content),
+            "source_chars_used": used,
+            "report": report,
         }
 
     finally:
@@ -592,6 +593,21 @@ async def upload_file(
             os.rmdir(temp_dir)
         except Exception:
             pass
+
+async def _compile_check(files: list, figure_names: list) -> Optional[list]:
+    """Compile once (figures are uploaded later, so their missing-file errors are dropped); None if the compiler is unavailable."""
+    from api.services.agent_loop import UNAVAILABLE_MARKERS, parse_log
+    try:
+        _, log = await latex_service.compile_log(files, "main.tex")
+    except Exception:
+        logger.exception("post-generation compile check failed")
+        return None
+    if "! " not in log and any(m in log for m in UNAVAILABLE_MARKERS):
+        return None
+    stems = [n.rsplit(".", 1)[0] for n in figure_names]
+    return [f"l.{d.line}: {d.message}" if d.line else d.message for d in parse_log(log)
+            if d.kind == "error" and not ("not found" in d.message and any(s in d.message for s in stems))][:10]
+
 
 # Feedback endpoint
 feedback_router = APIRouter(tags=["Feedback"])

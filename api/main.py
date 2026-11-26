@@ -113,7 +113,8 @@ async def serve_spa(full_path: str = ""):
     # Serve React app for all non-API routes
     index_path = os.path.join(frontend_dist, "index.html")
     if os.path.exists(index_path):
-        return FileResponse(index_path)
+        # Hashed /assets are immutable; index.html must revalidate or browsers keep running the previous deploy.
+        return FileResponse(index_path, headers={"Cache-Control": "no-cache"})
 
     # Fallback for development
     return {"message": "syntex API running. Frontend not built."}

@@ -170,9 +170,14 @@ export function Home() {
       clearInterval(progressInterval);
 
       // Carried into the editor rather than shown here, which unmounts on navigate.
-      const warning = result.truncated
-        ? `Only the first ${Math.round(result.source_chars_used / 1000)}k characters of the source were converted.`
-        : undefined;
+      const r = result.report;
+      const warning = [
+        result.truncated && `Only the first ${Math.round(result.source_chars_used / 1000)}k characters of the source were converted.`,
+        r?.truncated.length && `Cut off at the token limit: ${r.truncated.join('; ')}.`,
+        r?.incomplete.length && `May be missing equations/tables: ${r.incomplete.join('; ')}.`,
+        r?.failed.length && `Generation failed for: ${r.failed.join(', ')}.`,
+        r?.compile_errors?.length && `${r.compile_errors.length} compile error(s), first: ${r.compile_errors[0]}.`,
+      ].filter(Boolean).join(' ') || undefined;
 
       if (result.missing_images && result.missing_images.length > 0) {
         setMissingImagesDialog({ projectId: result.project_id, images: result.missing_images });

@@ -156,6 +156,10 @@ class SelectionContext(BaseModel):
     start_line: int
     end_line: int
 
+class AgentAttachment(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    data: str = Field(..., max_length=14_000_000)  # base64 PDF; ~10MB decoded
+
 class AgentEditRequest(BaseModel):
     project_id: str
     instruction: str
@@ -166,6 +170,7 @@ class AgentEditRequest(BaseModel):
     project_files: Optional[List[Dict]] = None  # [{name, content, type}, ...] for supporting files
     cursor_line: Optional[int] = None  # 1-based line number of the cursor in the editor
     main_file: Optional[str] = None  # project root .tex compiled by the agent's verification step
+    attachment: Optional[AgentAttachment] = None
 
 class DiffChange(BaseModel):
     start_line: int

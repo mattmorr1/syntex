@@ -32,21 +32,17 @@ PATTERN_MAX_LEN = 200
 BINARY_TYPES = frozenset({"png", "jpg", "jpeg", "pdf"})
 
 ACTIONS = ("read_file", "search", "edit", "compile", "inspect_log", "finish")
+ARG_TYPES = {"name": "string", "start": "integer", "end": "integer", "pattern": "string", "start_line": "integer",
+             "end_line": "integer", "original": "string", "replacement": "string", "mode": "string",
+             "context": "integer", "explanation": "string"}
+# Every arg is required-but-nullable: Gemini structured output drops optional fields (edit arrived without end_line).
 ACTION_SCHEMA: Dict[str, Any] = {
     "type": "object",
     "properties": {
         "thought": {"type": "string"},
         "action": {"type": "string", "enum": list(ACTIONS)},
-        "args": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"}, "start": {"type": "integer"}, "end": {"type": "integer"},
-                "pattern": {"type": "string"}, "start_line": {"type": "integer"}, "end_line": {"type": "integer"},
-                "original": {"type": "string"}, "replacement": {"type": "string"},
-                "mode": {"type": "string", "enum": ["errors", "warnings", "grep", "tail"]},
-                "context": {"type": "integer"}, "explanation": {"type": "string"},
-            },
-        },
+        "args": {"type": "object", "properties": {k: {"type": t, "nullable": True} for k, t in ARG_TYPES.items()},
+                 "required": list(ARG_TYPES)},
     },
     "required": ["thought", "action", "args"],
 }
@@ -60,7 +56,7 @@ _DIGITS = re.compile(r"\d+")
 _ERR_LINE = re.compile(r"^l\.(\d+)")
 _WARN = re.compile(r"^(?:LaTeX|Package \S+|Class \S+|LaTeX Font) Warning: (.*)")
 _INPUT_LINE = re.compile(r"on input line (\d+)")
-_UNAVAILABLE = ("LaTeX compiler not found", "Main file not found", "Compilation timed out")
+UNAVAILABLE_MARKERS = ("LaTeX compiler not found", "Main file not found", "Compilation timed out")
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,6 +167,8 @@ class AgentLoop:
     new_errors: List[Diagnostic] = field(default_factory=list)
     baseline: List[Diagnostic] = field(default_factory=list)
     unavailable: Optional[str] = None
+    readonly: frozenset = frozenset()
+    attachment_note: str = ""
     _baseline_task: Optional[asyncio.Task] = None
 
     def __post_init__(self) -> None:
@@ -180,14 +178,14 @@ class AgentLoop:
 
     # -- compile plumbing --------------------------------------------------
     def _compile_files(self) -> List[Dict[str, Any]]:
-        return [{"name": n, "content": c, "type": self.file_types.get(n, n.rsplit(".", 1)[-1])} for n, c in self.files.items()]
+        return [{"name": n, "content": c, "type": self.file_types.get(n, n.rsplit(".", 1)[-1])} for n, c in self.files.items() if n not in self.readonly]
 
     async def _await_baseline(self) -> None:
         if self._baseline_task is None:
             return
         task, self._baseline_task = self._baseline_task, None
         _, log = await task
-        if any(s in log for s in _UNAVAILABLE) and "! " not in log:
+        if any(s in log for s in UNAVAILABLE_MARKERS) and "! " not in log:
             self.unavailable = log.strip()[:200]
         self.baseline = parse_log(log)
 
@@ -218,7 +216,7 @@ class AgentLoop:
         try:
             start, end = int(args["start_line"]), int(args["end_line"])
         except (KeyError, TypeError, ValueError):
-            return "edit requires integer start_line and end_line"
+            return f"edit requires integer start_line and end_line; received start_line={args.get('start_line')!r}, end_line={args.get('end_line')!r}. Send both."
         original, replacement = str(args.get("original") or ""), str(args.get("replacement") or "")
         if not (1 <= start <= len(lines) + 1 and start - 1 <= end <= len(lines)):
             return f"line range {start}-{end} out of bounds (file has {len(lines)} lines)"
@@ -303,10 +301,11 @@ RULES
 3. Pre-existing baseline errors are not yours to fix unless the instruction asks.
 4. For questions that need no edit, finish immediately with the answer as the explanation.
 5. Budget: {MAX_STEPS} steps, {MAX_COMPILES} compiles. Steps used: {len(self.steps)}.
+6. `args` must contain every field; set the ones this action does not use to null.
 
 PROJECT FILES: {files}
 MAIN FILE: {self.main_file or 'none'}
-{sel}
+{self.attachment_note}{sel}
 CURRENT ACTIVE FILE `{self.active}` ({note}; reflects your edits):
 {view}
 
@@ -322,6 +321,8 @@ HISTORY:
         status = "no_changes" if not changes else "verified" if verified else "unverified"
         if status == "unverified":
             explanation += f"\n\n[Not verified: {self.unavailable or ('new compile errors remain' if self.new_errors else 'edits were not compiled')}; stop reason: {stop}.]"
+        elif stop != "finish":
+            explanation += f"\n\n[Stopped ({stop}) before finishing. Last tool result: {_clip(self.steps[-1].observation, 200) if self.steps else 'none'}]"
         return {"type": "result", "explanation": explanation, "changes": changes,
                 "tokens": self.tokens, "status": status, "steps": len(self.steps), "compiles": self.compiles}
 
@@ -343,6 +344,7 @@ HISTORY:
                     thought, action, args = str(act.get("thought", "")), str(act.get("action", "")), act.get("args") or {}
                     if not isinstance(args, dict):
                         raise ValueError("args must be an object")
+                    args = {k: v for k, v in args.items() if v is not None}
                 except ValueError as e:
                     thought, action, args, tok = "", "", {}, 0
                     obs = f"Your response was not a valid action JSON ({e}). Return {{thought, action, args}}."
@@ -388,12 +390,20 @@ HISTORY:
 
 def build_loop(llm: LLM, compiler: Compiler, *, document: str, instruction: str, file_name: Optional[str],
                project_files: Optional[List[Dict[str, Any]]], main_file: Optional[str],
-               selection: Optional[Dict[str, Any]] = None, cursor_line: Optional[int] = None) -> AgentLoop:
+               selection: Optional[Dict[str, Any]] = None, cursor_line: Optional[int] = None,
+               attachment: Optional[Dict[str, Any]] = None, pdf_visible: bool = False) -> AgentLoop:
     active = file_name or "main.tex"
     text = [f for f in project_files or [] if f.get("type") not in BINARY_TYPES and f.get("name") and f["name"] != active]
     files = {active: document, **{f["name"]: str(f.get("content") or "") for f in text}}
     types = {f["name"]: f.get("type") or "" for f in text}
     if main_file not in files:
         main_file = next((n for n, c in files.items() if n.endswith(".tex") and "\\documentclass" in c), None)
+    readonly, note = frozenset(), ""
+    if attachment:
+        files[attachment["name"]], readonly = attachment["text"], frozenset({attachment["name"]})
+        note = (f"ATTACHED PDF: text extract is the read-only file `{attachment['name']}` ({attachment['pages']} pages, '--- page N ---' markers); "
+                "use read_file/search on it." + (" The original PDF is also attached to this request: read equations, tables and layout from "
+                                                 "it, since the extract flattens math." if pdf_visible else "") + "\n")
     return AgentLoop(llm=llm, compiler=compiler, instruction=instruction, files=files, file_types=types,
-                     active=active, main_file=main_file, selection=selection, cursor_line=cursor_line)
+                     active=active, main_file=main_file, selection=selection, cursor_line=cursor_line,
+                     readonly=readonly, attachment_note=note)

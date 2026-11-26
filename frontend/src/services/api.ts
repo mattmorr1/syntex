@@ -50,6 +50,15 @@ async function request<T>(
   return response.json();
 }
 
+export interface GenerationReport {
+  path: 'chunked' | 'single_pass';
+  truncated: string[];
+  incomplete: string[];
+  failed: string[];
+  unresolved_refs?: string[];
+  compile_errors?: string[] | null;
+}
+
 export interface AgentStep {
   step: number;
   thought: string;
@@ -240,6 +249,7 @@ export const api = {
     cursorLine?: number,
     mainFile?: string,
     onStep?: (step: AgentStep) => void,
+    attachment?: { name: string; data: string },
   ) => {
     const token = useAuthStore.getState().token;
     const response = await fetch(`${API_BASE}/ai/agent-edit/stream`, {
@@ -248,7 +258,7 @@ export const api = {
         'Content-Type': 'application/json',
         ...(token && { Authorization: `Bearer ${token}` }),
       },
-      body: JSON.stringify({ project_id: projectId, instruction, document, model, selection, project_files: projectFiles, file_name: fileName, cursor_line: cursorLine, main_file: mainFile }),
+      body: JSON.stringify({ project_id: projectId, instruction, document, model, selection, project_files: projectFiles, file_name: fileName, cursor_line: cursorLine, main_file: mainFile, attachment }),
     });
 
     if (response.status === 401) {
@@ -361,7 +371,7 @@ export const api = {
     }),
 
   // Upload
-  uploadFile: async (file: File, theme: string, customTheme?: string, clsContent?: string, maxTokens?: number): Promise<{ project_id: string; tokens_used: number; missing_images: string[]; truncated: boolean; source_chars_used: number }> => {
+  uploadFile: async (file: File, theme: string, customTheme?: string, clsContent?: string, maxTokens?: number): Promise<{ project_id: string; tokens_used: number; missing_images: string[]; truncated: boolean; source_chars_used: number; report?: GenerationReport }> => {
     let token = useAuthStore.getState().token;
     if (firebaseEnabled) {
       const fresh = await getCurrentToken();
