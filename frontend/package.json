@@ -21,7 +21,7 @@
     "react-dom": "^18.3.1",
     "react-pdf": "^9.2.1",
     "react-resizable-panels": "^2.1.7",
-    "react-router-dom": "^7.18.0",
+    "react-router-dom": "^7.18.2",
     "y-monaco": "^0.1.6",
     "y-protocols": "^1.0.7",
     "y-websocket": "^3.1.0",
@@ -31,12 +31,12 @@
   "devDependencies": {
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
-    "@vitejs/plugin-react": "^4.3.4",
+    "@vitejs/plugin-react": "^6.3.0",
     "typescript": "^5.7.3",
-    "vite": "^6.4.2"
+    "vite": "^8.3.8"
   },
   "overrides": {
-    "dompurify": "^3.4.10",
+    "dompurify": "^3.4.13",
     "yaml": "^2.8.3",
     "picomatch": "^4.0.4"
   }
